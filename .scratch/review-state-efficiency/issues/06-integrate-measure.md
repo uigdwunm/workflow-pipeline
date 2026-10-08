@@ -53,6 +53,12 @@ G4：原容量耗尽用例已在 e503b46 经项目 runner 单例复现（3.2 秒
 
 G1 审查 P2：attached 原私有修订消费者残留 v1 regex，原作者仅改该一字符并固定 `4368bcc`。`t06-g1/21-attached-revision-red` 与 `22-attached-revision-fixed` 保留原时间/源码；后者已越过 ledger/CAS、激活/replay、scope/执行断言，但在 candidate-ready 缺 Ticket acceptance，整用例未通过。原 reviewer 只复查 P2 增量。G2/G3 精确追加同文件 `test_attached_plan_revision_uses_original_ledger_record` 的真实 local/Ticket/early-check 接线，manifest 已登记；不扩展 attached 初始化或接受假 pass。
 
+G2 字节固定于 `044b83e`（17 路径，runtime 初始化仅两行接线、其五包 canonical 和原测试适配）。作者/runner 停稳，命令与 WIP 指纹保留外部 `t06-g2/command-index.md`、`final-snapshot.json`、`final-patch.diff`。两个真实 runner 模式通过；Pending 为原 14 项通过加实际 pre-CAS 原调用保留单例通过；ReviewFirst 原模块 28 PASS/11 红，后续定向复查覆盖全部 11 红，不重标原模块结果。fake-ref、foreign history、carried/adoption、未知 verdict、exact receipt ACK、inline 原 launch/lease/N5 真实性均有原公共调用证据。局部 reviewer 复查原候选，最终全量仍未执行。
+
+G2 留三个入口：27 Layered 原 finalization_owner 缺 exact ref/cause；62/63 attached 真 Ticket-check 被原 adapter blocked/invalid_request，cause 未知；64 closed-docs 的共享局部审查 helper 硬编码 task，真实 Originating Task 身份被拒绝。前两项交 G4 真实原因探针，不削弱原停止/权限 guard。
+
+G1 后续兼容小组：原 `test_workflow_control.py` 的 call/schema、v2 catalog/slices；`test_stage_scope_runner.py` 三个 current11/render 断言；`test_lifecycle_snapshot_retry.py` 通过真实 `_new_state` 与公开 C/owner 初始化构造四项原 journal/锁用例；`test_workflow_progress.py` 的 complete_fixture_local_reviews 从原 handoff 与 Controller 取身份，修 64 真实消费者。精确依赖已登记 manifest；scope_seal_control 保持只读消费验证。快速顺序为 pure preparation、accepted-witness、scope-seal、真实 Git changed-requirement、runner9项、合法 lifecycle 单例后4项、closed-docs 原消费者；未知 coverage 别构造假 pass。实现者复用 `/root/t06_g1`，source/runner 单写者；原 runtime/旧运行拒绝不变。
+
 ## 验证顺序与交付
 
 1. 每组先选择通过项目 runner 的最小反馈命令，证明合法输入和目标失败确实可达；准备失败先修合法基线，避免反复跑长模块寻找同一输入错误。

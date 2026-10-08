@@ -1306,7 +1306,8 @@
       ],
       "generated_outputs": [],
       "implementation_note": "T02 execution-plan-v2 的真实 Stage2 冻结与后续分层审查夹具依赖 planning_spec；保留 Stage2 两轴原权限，不将执行 accepted 当作局部审查。 T06确认：Layered/T04父夹具allocation_slot在本文件53–60，仅read_subject导致真实归档后subject_missing（原t05-a-affected-layered-certificate/t04-claims日志）；允许该原helper用store精确归档引用读取，保留未知/损坏/跨run拒绝。其他helper仅实际已授权fixture依赖可适配，不扩展生产行为。 原observation停止census亦由该父夹具产生，原t05-a-affected-original-wrappers-attempt1日志已证遗漏archive roles；仅在原已停止证明有效时补原角色，不伪造stop/unknown状态。 T06新运行mark/accept路径经原公有C/B/Git allocation与local/Ticket claim接线；只在测试temporary repo按原基线/原已接受fingerprints恢复尚无owner的owned bytes、保留HEAD/index/candidate，再在真实write grant下写回候选原bytes/modes并accept delta。保护planning/unrelated/unknown/既有accepted bytes。unused finalize_candidate与pure-control fixture_accepted_execution继续不改；不append权限或弱化生产拒绝。",
-      "remaining_scope": "T06 exact original fixture helper compatibility only; no new mechanisms or weakening assertions"
+      "remaining_scope": "T06 exact original fixture helper compatibility only; no new mechanisms or weakening assertions",
+      "t06_g1_compat_remaining_scope": "G1 continuation only complete_fixture_local_reviews originating actor from original handoff.expected_entry.actor.thread_id (production guard8504) and original context.controller_ref receipt instead of literal task, with exact unchanged public review inputs. Source t06-g2/64 closed-docs failure; no runtime identity guard change."
     },
     {
       "path": "tests/runtime/test_workflow.py",
@@ -1420,13 +1421,15 @@
       "path": "tests/runtime/test_workflow_control.py",
       "operation": "modify",
       "tickets": [
-        "T02"
+        "T02",
+        "T06"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_g1_compat_remaining_scope": "G1 continuation only original call schema7 default/current activation schema assertions and execution_plan_fixture v2 catalog/slices; original legacy5/schema6 refusals retained. Existing verification_fixture coverage remains unknown, no fake pass/permission or broad rewrite."
     },
     {
       "path": "tests/runtime/test_plan_revision_progress.py",
@@ -1442,7 +1445,7 @@
       "generated_outputs": [],
       "implementation_note": "T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal.",
       "t06_g1_remaining_scope": "new_active_flow shared by unbound dispatch fixture needs explicit shared helper invocation; inline_revision_b_delivery new helper must be included in existing slice; do not alter revision business/refusal assertions.",
-      "t06_g2_remaining_scope": "G3 only inline_revision_b_delivery current real local/Ticket acceptance and early checks before candidate-ready; G1 version/input identity assertions remain. Do not construct fake acceptance or weaken review guards."
+      "t06_g2_remaining_scope": "G3 only inline_revision_b_delivery current real local/Ticket acceptance and early checks before candidate-ready; G1 version/input identity assertions remain. Do not construct fake acceptance or weaken review guards. Original same-test activated-to-prepared tamper now targets exact pinned original predecessor object, rejects hash corruption without checkpoint write, restores in finally; integrity claim only, no invented semantic CAS pass."
     },
     {
       "path": "tests/runtime/test_workflow_control_git.py",
@@ -1745,7 +1748,7 @@
     },
     {
       "path": "tests/runtime/test_lifecycle_snapshot_retry.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1753,7 +1756,8 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_g1_compat_remaining_scope": "G1 continuation only original setUp real _new_state and public Progress.start/current owner producer, owner-compatible outer reset; original four journal/lock/inflight/no-intent/invalid-checkpoint assertions. Do not construct incomplete full-inline C or fake permission; actual initialization sequence subject to fast evidence."
     },
     {
       "path": "tests/runtime/test_model_inventory.py",
@@ -1790,7 +1794,7 @@
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": [],
-      "t06_g2_remaining_scope": "G2 only unresolved() reads exact active owner instead of finite current header. Original 15 stop/resolution/CAS assertions and injection points unchanged."
+      "t06_g2_remaining_scope": "Completed at044b83e: unresolved exact owner and stop_save_window(false) actual pre-CAS fault. Verify no persisted pause/stop and byte-identical checkpoint; only exact lookup of original continue, then retry same prior pause request. Post-CAS original stop recovery unchanged; original call/identity/settlement/no-write assertions retained."
     },
     {
       "path": "tests/runtime/test_publication_progress.py",
@@ -1934,7 +1938,7 @@
     },
     {
       "path": "tests/runtime/test_stage_scope_runner.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1942,7 +1946,8 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_g1_compat_remaining_scope": "G1 continuation only three current runner11/render checkpoint_path expectations; retain legacy9 and current prior10 refusals. No runtime change."
     },
     {
       "path": "tests/runtime/test_stage_scope_transfer.py",
@@ -3293,6 +3298,20 @@
           "t06-g1/22-attached-revision-fixed.log; original P2 bytes fixed at4368bcc and same-reviewer closure pending"
         ],
         "scope": "existing runner initialization and original fixture read/write/review/census wiring only; G4 capacities remain distinct; no Store guard/API/version/support expansion"
+      },
+      "g1_compat_confirmed_dependency": {
+        "basis_candidate": "044b83ec0b9d92cbcd7b001bcb7fb12a247cb9eb",
+        "paths": [
+          "tests/runtime/test_workflow_control.py",
+          "tests/runtime/test_stage_scope_runner.py",
+          "tests/runtime/test_lifecycle_snapshot_retry.py",
+          "tests/runtime/test_workflow_progress.py"
+        ],
+        "evidence": [
+          "t06-g1/compatibility-diagnosis.md original full-gate traces and fixed producer hashes",
+          "t06-g2/64-closure-docs original Originating Task guard; exact filename in command-index.md"
+        ],
+        "scope": "current original test producers/consumers only; no runtime change, scope-seal consumer stays verify, original legacy/unknown/permission/journal guards retained"
       }
     }
   }
