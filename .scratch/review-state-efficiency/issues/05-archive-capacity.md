@@ -72,3 +72,7 @@ V03：`test_publication_recovery.py`、`test_business_recovery.py`、`test_accep
 ## 序列化 B 消费者依赖（2026-10-07）
 
 真实 C 归档／冷恢复组合已核验原接受事实与 Git ownership；B 的 JSON/CLI 传输会失去 Store 验证投影的内存类型。`stage_dispatch.verify_allocation_intent` 先核原 C transaction、请求摘要和 base_control_digest，随后 handle/checkpoint 必须从原 checkpoint 或精确 ledger pointer 重新解开有限事实，并比对原摘要／expected pointer。不能把发送者自报 JSON 包装成已验权限。manifest 将该 source 与五包输出加入 T05，原 nonce、intent、scope、lease 与 CAS 门禁保持。
+
+## B diagnostic output capacity dependency (2026-10-08)
+
+Read-only inspection of `foreground_host.py:103-121` confirmed direct unbounded native stderr writes. The manifest now binds that source and its guided package output to T05. B must spool diagnostics through the same fixed owned-run physical capacity while preserving original intent/stop/unknown recovery; this does not authorize installation or a new service. T05-A remains accepted only at `526c55c`, with B and whole Ticket acceptance pending.

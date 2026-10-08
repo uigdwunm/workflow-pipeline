@@ -1076,16 +1076,20 @@
     },
     {
       "path": "src/stages/guided-implementation/scripts/foreground_host.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T01",
-        "T06"
+        "T06",
+        "T05"
       ],
       "kind": "source",
       "reason": "核验协议/fixture/调用方一致性；未发现实质依赖时无需改字节",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [
+        "skills/guided-implementation/scripts/foreground_host.py"
+      ],
+      "implementation_note": "T05-B confirmed dependency: start() sends owned checkpoint.host.stderr directly to Popen without a bound. Add bounded diagnostic spooling through the original run capacity boundary; no new service, installation or protocol relaxation."
     },
     {
       "path": "src/shared/scripts/discussion_core/state.py",
@@ -1365,13 +1369,15 @@
       "path": "tests/runtime/test_plan_revision_progress.py",
       "operation": "modify",
       "tickets": [
-        "T04"
+        "T04",
+        "T06"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "implementation_note": "T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal."
     },
     {
       "path": "tests/runtime/test_workflow_control_git.py",
@@ -1421,14 +1427,15 @@
       "operation": "add",
       "tickets": [
         "T02",
-        "T03"
+        "T03",
+        "T06"
       ],
       "kind": "test",
       "reason": "新增真实生产边界行为回归",
       "exists_at_design": false,
       "symbols": [],
       "generated_outputs": [],
-      "implementation_note": "T03 issue V01/V03 既定真实行为：公共 fixture 的提前 Ticket/affected 检查、修复后旧完整 pass 失效；原 native ref 的新 invocation/lease、64KiB 摘要/有界展开、原 Slice ID 与首次提交记录。仅这些相关回归，不预晋升其余 verify 文件。"
+      "implementation_note": "T03 issue V01/V03 既定真实行为：公共 fixture 的提前 Ticket/affected 检查、修复后旧完整 pass 失效；原 native ref 的新 invocation/lease、64KiB 摘要/有界展开、原 Slice ID 与首次提交记录。仅这些相关回归，不预晋升其余 verify 文件。 T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal."
     },
     {
       "path": "tests/runtime/test_state_archive.py",
@@ -1835,7 +1842,7 @@
     },
     {
       "path": "tests/runtime/test_stage_scope_progress.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1843,7 +1850,8 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "implementation_note": "T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal."
     },
     {
       "path": "tests/runtime/test_stage_scope_runner.py",
@@ -3023,6 +3031,14 @@
       "source": "src/shared/scripts/discussion_protocol.py",
       "tickets": [
         "T01"
+      ]
+    },
+    {
+      "path": "skills/guided-implementation/scripts/foreground_host.py",
+      "operation": "generate",
+      "source": "src/stages/guided-implementation/scripts/foreground_host.py",
+      "tickets": [
+        "T05"
       ]
     }
   ],
