@@ -20,7 +20,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ],
       "kind": "source",
       "reason": "当前root有限投影、去重、审查/修复/修订与归档入口",
@@ -193,6 +194,11 @@
         {
           "name": "Progress.continuation_gate",
           "status": "existing-verified"
+        },
+        {
+          "name": "consumed_scope_readiness",
+          "status": "existing-verified",
+          "reason": "attempt17 real public second-revision failure; current accepted authority must remain provable while a later transaction is pending"
         }
       ],
       "generated_outputs": [
@@ -202,8 +208,8 @@
         "skills/problem-framing/scripts/workflow_progress.py",
         "skills/solution-design/scripts/workflow_progress.py"
       ],
-      "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。",
-      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery."
+      "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。 T06 attempt17（35.26s）证明第二次prepare替换最新txn后，原已activated authority被readiness消费者误拒。仅核现有有界原activated transaction/control receipt与当前原Control authority一致性，保留predecessor/contract/baseline、缺失/篡改/foreign/未激活拒绝；不新增机制、格式或限额。",
+      "remaining_scope": "Preserve reviewed core; exclude deferred B. T06 only repairs consumed_scope_readiness for original accepted activation during later pending revision, using bounded original transaction/Control proof. No GC/quota/reserve/log-spool/physical ledger accounting or extreme-scale work."
     },
     {
       "path": "src/shared/scripts/workflow_control.py",
@@ -1275,10 +1281,20 @@
           "name": "ProgressTests.observation",
           "status": "existing-verified",
           "reason": "original stop census omits archived execution/review roles; exact committed proofs required"
+        },
+        {
+          "name": "ProgressTests.mark_reviewable",
+          "status": "existing-verified",
+          "reason": "attempt18 original new-run review/transfer candidate lacks approved local/Ticket coverage"
+        },
+        {
+          "name": "ProgressTests.accept_current",
+          "status": "existing-verified",
+          "reason": "attempt18 original new-run review/transfer candidate lacks approved local/Ticket coverage"
         }
       ],
       "generated_outputs": [],
-      "implementation_note": "T02 execution-plan-v2 的真实 Stage2 冻结与后续分层审查夹具依赖 planning_spec；保留 Stage2 两轴原权限，不将执行 accepted 当作局部审查。 T06确认：Layered/T04父夹具allocation_slot在本文件53–60，仅read_subject导致真实归档后subject_missing（原t05-a-affected-layered-certificate/t04-claims日志）；允许该原helper用store精确归档引用读取，保留未知/损坏/跨run拒绝。其他helper仅实际已授权fixture依赖可适配，不扩展生产行为。 原observation停止census亦由该父夹具产生，原t05-a-affected-original-wrappers-attempt1日志已证遗漏archive roles；仅在原已停止证明有效时补原角色，不伪造stop/unknown状态。",
+      "implementation_note": "T02 execution-plan-v2 的真实 Stage2 冻结与后续分层审查夹具依赖 planning_spec；保留 Stage2 两轴原权限，不将执行 accepted 当作局部审查。 T06确认：Layered/T04父夹具allocation_slot在本文件53–60，仅read_subject导致真实归档后subject_missing（原t05-a-affected-layered-certificate/t04-claims日志）；允许该原helper用store精确归档引用读取，保留未知/损坏/跨run拒绝。其他helper仅实际已授权fixture依赖可适配，不扩展生产行为。 原observation停止census亦由该父夹具产生，原t05-a-affected-original-wrappers-attempt1日志已证遗漏archive roles；仅在原已停止证明有效时补原角色，不伪造stop/unknown状态。 T06新运行mark/accept路径经原公有C/B/Git allocation与local/Ticket claim接线；只在测试temporary repo按原基线/原已接受fingerprints恢复尚无owner的owned bytes、保留HEAD/index/candidate，再在真实write grant下写回候选原bytes/modes并accept delta。保护planning/unrelated/unknown/既有accepted bytes。unused finalize_candidate与pure-control fixture_accepted_execution继续不改；不append权限或弱化生产拒绝。",
       "remaining_scope": "T06 exact original fixture helper compatibility only; no new mechanisms or weakening assertions"
     },
     {
@@ -1304,9 +1320,20 @@
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
-      "symbols": [],
+      "symbols": [
+        {
+          "name": "StageTransferTests.complete_design",
+          "status": "existing-verified",
+          "reason": "attempt18 original new-run review/transfer candidate lacks approved local/Ticket coverage"
+        },
+        {
+          "name": "StageTransferTests.mark_reviewable",
+          "status": "existing-verified",
+          "reason": "attempt18 original new-run review/transfer candidate lacks approved local/Ticket coverage"
+        }
+      ],
       "generated_outputs": [],
-      "implementation_note": "T02 三层交付证据、plan-v2 与同 C Stage3→4 消费契约的必经 fixture 适配；保持原身份、停止及交付门禁反例。 T06实证依赖t03-21：179–192 input_for(3)仍固定inline schema_version1且缺behavior_slices，现行v2 catalog在新T03逻辑前拒绝；只适配新运行fixture生产者，原legacy拒绝回归保留。"
+      "implementation_note": "T02 三层交付证据、plan-v2 与同 C Stage3→4 消费契约的必经 fixture 适配；保持原身份、停止及交付门禁反例。 T06实证依赖t03-21：179–192 input_for(3)仍固定inline schema_version1且缺behavior_slices，现行v2 catalog在新T03逻辑前拒绝；只适配新运行fixture生产者，原legacy拒绝回归保留。 T06新运行mark/accept路径经原公有C/B/Git allocation与local/Ticket claim接线；只在测试temporary repo按原基线/原已接受fingerprints恢复尚无owner的owned bytes、保留HEAD/index/candidate，再在真实write grant下写回候选原bytes/modes并accept delta。保护planning/unrelated/unknown/既有accepted bytes。unused finalize_candidate与pure-control fixture_accepted_execution继续不改；不append权限或弱化生产拒绝。"
     },
     {
       "path": "tests/runtime/test_unified_recovery.py",
@@ -2135,7 +2162,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2147,7 +2175,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2159,7 +2188,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2171,7 +2201,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2183,7 +2214,8 @@
         "T02",
         "T03",
         "T04",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -3156,6 +3188,22 @@
       "symbol": "ArchiveAffectedTests.test_archive_affected_cli_original_proof_rejections",
       "evidence": "T06 attempt13, real54.18s, expected original stale proof rejection replaced by wrapper with review-has-not-started; current Layered test already verifies original refusals",
       "scope": "only remove obsolete duplicate fixture rewrite; A runtime evidence unchanged"
+    },
+    "core_consumer_dependency": {
+      "path": "src/shared/scripts/workflow_progress.py",
+      "symbol": "consumed_scope_readiness",
+      "evidence": "T06 attempt17 real35.26s; second prepare loses readiness for prior valid activated authority",
+      "outputs": "existing five canonical mappings gain T06 owner",
+      "scope": "existing private revision/readiness correctness only, not expanded feature/route"
+    },
+    "coverage_fixture_dependency": {
+      "evidence": "T06 attempt18 real21.60s, original new-run candidate-ready fails missing Ticket acceptance",
+      "symbols": [
+        "StageTransferTests.mark_reviewable",
+        "ProgressTests.mark_reviewable",
+        "ProgressTests.accept_current"
+      ],
+      "scope": "original public temporary C/B/Git fixtures; unused finalize and isolated pure-control fake inputs unchanged"
     }
   }
 }
