@@ -2615,7 +2615,8 @@
       "tickets": [
         "T01",
         "T03",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2625,7 +2626,8 @@
       "tickets": [
         "T01",
         "T03",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2635,7 +2637,8 @@
       "tickets": [
         "T01",
         "T03",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2645,7 +2648,8 @@
       "tickets": [
         "T01",
         "T03",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -2655,7 +2659,8 @@
       "tickets": [
         "T01",
         "T03",
-        "T05"
+        "T05",
+        "T06"
       ]
     },
     {
@@ -3339,7 +3344,7 @@
         ],
         "known": "ordinary archive intent precheck and explicit raw/metadata accounting; original maximum report stays required",
         "unknown": "actual serialized subject culprit, actual integration diff, native finalization ref, attached adapter cause and closed-docs accept cause; one exact public probe each before changes",
-        "generated": "existing five Store/progress canonical mappings and existing package digests only; generated_outputs inventory unchanged",
+        "generated": "five existing Store/progress canonical paths unchanged; T06 added to original five Store output ownership rows; existing package digests regenerate only",
         "rule": "sole source/runner writer, no new Ticket/ADR/platform or cap/guard relaxation; exact further source seams documented from real cause"
       }
     }
