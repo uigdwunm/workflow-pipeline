@@ -219,7 +219,8 @@
         "skills/solution-design/scripts/workflow_progress.py"
       ],
       "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。 T06 attempt17（35.26s）证明第二次prepare替换最新txn后，原已activated authority被readiness消费者误拒。仅核现有有界原activated transaction/control receipt与当前原Control authority一致性，保留predecessor/contract/baseline、缺失/篡改/foreign/未激活拒绝；不新增机制、格式或限额。 T06 attempt23（35.87s）合法第二次activated后原B scope projection缺fullowner证明；保持既有shape/预算及pending事务事实，从原已提交root/control证明产生有限execution_authority事实并核原checkpoint投影，缺proof/自报JSON不授ready，新pending不授B新派发。不导出history、不新flag/服务/hydrate。",
-      "remaining_scope": "Preserve reviewed core; exclude deferred B. T06 only repairs consumed_scope_readiness for original accepted activation during later pending revision, using bounded original transaction/Control proof. No GC/quota/reserve/log-spool/physical ledger accounting or extreme-scale work."
+      "remaining_scope": "Preserve reviewed core; exclude deferred B. T06 only repairs consumed_scope_readiness for original accepted activation during later pending revision, using bounded original transaction/Control proof. No GC/quota/reserve/log-spool/physical ledger accounting or extreme-scale work.",
+      "t06_g2_remaining_scope": "G2 only Progress.save/prepare_review_archive current lookup for original valid unconverted runner11 outer; let existing save_current_record validate initial CAS; do not relax Store legacy guard. Existing five canonical outputs regenerated."
     },
     {
       "path": "src/shared/scripts/workflow_control.py",
@@ -1374,14 +1375,16 @@
       "operation": "modify",
       "tickets": [
         "T02",
-        "T03"
+        "T03",
+        "T06"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": [],
-      "implementation_note": "T03 issue V01/V03 既定真实行为：公共 fixture 的提前 Ticket/affected 检查、修复后旧完整 pass 失效；原 native ref 的新 invocation/lease、64KiB 摘要/有界展开、原 Slice ID 与首次提交记录。仅这些相关回归，不预晋升其余 verify 文件。"
+      "implementation_note": "T03 issue V01/V03 既定真实行为：公共 fixture 的提前 Ticket/affected 检查、修复后旧完整 pass 失效；原 native ref 的新 invocation/lease、64KiB 摘要/有界展开、原 Slice ID 与首次提交记录。仅这些相关回归，不预晋升其余 verify 文件。",
+      "t06_g2_remaining_scope": "G2 ready_candidate/foreign-history/inline recovery use existing real allocation acceptance and local/Ticket checks; exact owner reads/CAS fault hooks; independent legacy refusal fixture; revision carry/adopt valid v2 slice plus original owner/archive lookup. No fake pass or control authority mutation."
     },
     {
       "path": "tests/runtime/test_plan_driven_dispatch.py",
@@ -1395,7 +1398,8 @@
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": [],
-      "t06_g1_remaining_scope": "inline_plan still emits schema1/no slices; positive mutations need slices, activated revision parses v1, and unbound new_active_flow calls absent instance helper. Original dispatch assertions unchanged."
+      "t06_g1_remaining_scope": "inline_plan still emits schema1/no slices; positive mutations need slices, activated revision parses v1, and unbound new_active_flow calls absent instance helper. Original dispatch assertions unchanged.",
+      "t06_g2_remaining_scope": "G2 only test_fake_accepted_ref_cannot_make_git_candidate_ready source current-owner/CAS fixture after G1 lawful plan baseline; preserve fake-accepted rejection and no-write evidence."
     },
     {
       "path": "tests/runtime/test_execution_plans.py",
@@ -1437,7 +1441,8 @@
       "symbols": [],
       "generated_outputs": [],
       "implementation_note": "T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal.",
-      "t06_g1_remaining_scope": "new_active_flow shared by unbound dispatch fixture needs explicit shared helper invocation; inline_revision_b_delivery new helper must be included in existing slice; do not alter revision business/refusal assertions."
+      "t06_g1_remaining_scope": "new_active_flow shared by unbound dispatch fixture needs explicit shared helper invocation; inline_revision_b_delivery new helper must be included in existing slice; do not alter revision business/refusal assertions.",
+      "t06_g2_remaining_scope": "G3 only inline_revision_b_delivery current real local/Ticket acceptance and early checks before candidate-ready; G1 version/input identity assertions remain. Do not construct fake acceptance or weaken review guards."
     },
     {
       "path": "tests/runtime/test_workflow_control_git.py",
@@ -1497,7 +1502,8 @@
       "exists_at_design": false,
       "symbols": [],
       "generated_outputs": [],
-      "implementation_note": "T03 issue V01/V03 既定真实行为：公共 fixture 的提前 Ticket/affected 检查、修复后旧完整 pass 失效；原 native ref 的新 invocation/lease、64KiB 摘要/有界展开、原 Slice ID 与首次提交记录。仅这些相关回归，不预晋升其余 verify 文件。 T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal."
+      "implementation_note": "T03 issue V01/V03 既定真实行为：公共 fixture 的提前 Ticket/affected 检查、修复后旧完整 pass 失效；原 native ref 的新 invocation/lease、64KiB 摘要/有界展开、原 Slice ID 与首次提交记录。仅这些相关回归，不预晋升其余 verify 文件。 T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal.",
+      "t06_g2_remaining_scope": "G3 recover_layered_dispatcher includes actual ready replacement from original lifecycle authority before building stop census; do not mark unknown actors stopped or reduce raw-padding/budgets."
     },
     {
       "path": "tests/runtime/test_state_archive.py",
@@ -1774,7 +1780,7 @@
     },
     {
       "path": "tests/runtime/test_pending_host_actions.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1782,7 +1788,8 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_g2_remaining_scope": "G2 only unresolved() reads exact active owner instead of finite current header. Original 15 stop/resolution/CAS assertions and injection points unchanged."
     },
     {
       "path": "tests/runtime/test_publication_progress.py",
@@ -3266,6 +3273,23 @@
         "scope": "six existing tests only, v2 positive producers/consumers and shared helper binding; no runtime change or legacy refusal weakening",
         "repair_index_ref": "issues/06-integrate-measure.md",
         "resume": "human 恢复; subsequent diagnostic group writes serialized by root"
+      },
+      "g2_confirmed_dependency": {
+        "basis_candidate": "218558ebddb508c50bca2dcedbcc02d15e475c07",
+        "paths": [
+          "src/shared/scripts/workflow_progress.py",
+          "tests/runtime/test_pending_host_actions.py",
+          "tests/runtime/test_review_first_validation.py",
+          "tests/runtime/test_layered_review.py",
+          "tests/runtime/test_plan_driven_dispatch.py",
+          "tests/runtime/test_plan_revision_progress.py"
+        ],
+        "evidence": [
+          "original full gate3.log/9.log/25.log/59.log and /root/t06_g2 readonly producer/consumer trace",
+          "t06-g1/13-inline-revision.log",
+          "t06-g1/15-fake-accepted.log"
+        ],
+        "scope": "existing runner initialization and original fixture read/write/review/census wiring only; G4 capacities remain distinct; no Store guard/API/version/support expansion"
       }
     }
   }
