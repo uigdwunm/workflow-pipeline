@@ -47,6 +47,14 @@ The original checkpoint CAS, or the original attached ledger generation/CAS,
 commits history. Hash locators resolve an exact original receipt, closed subject,
 native identity or review response without scanning history. A prepared locator
 cannot acknowledge an operation before its authority commit proof exists.
+The Root commits one immutable compressed hash-directory reference for native
+identities and one for completed message keys. An exact path proves membership
+or absence without loading historical IDs. Missing directory objects, known
+native locators or original commit proofs reject permission checks; missing
+evidence never means a fresh identity. Completed message mappings leave the
+current subject with their event segment and retain exact original-event replay.
+Pending original actions and deferred inputs remain current. Runs without these
+committed directories retain their original runtime.
 Repeated original calls return their committed result with no new write release;
 another digest or an unrelated new invocation for a closed allocation is rejected.
 An explicit Controller repair verifies the original slot, accepted C result and

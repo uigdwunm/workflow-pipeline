@@ -188,6 +188,60 @@ class StateArchiveTests(unittest.TestCase):
         with self.assertRaises(entry.PreparationError):
             reopened.verify_archive_chain(reopened.open_current())
 
+    def message_archive_boundary(self):
+        key = entry.digest({'original': 'message'})
+        events = {'message-' + str(number): {'digest': entry.digest(number), 'applied': True}
+                  for number in range(256)}
+        events['message-0']['message'] = {'key': key, 'digest': key}
+        self.current = self.store.commit_current(expected_revision=1, revision=2,
+            subjects={'stage:3:0': {'status': 'active', 'events': events}},
+            metadata=self.current.root['metadata'], outer={})
+        self.current = self.store.compact(expected_revision=2, subject_ids=[])
+        return key
+
+    def test_message_exact_segment_replay_conflict_and_missing_commit_proof(self):
+        key = self.message_archive_boundary()
+        reopened = storage.StateStore(self.path)
+        current = reopened.open_current()
+        self.assertEqual(reopened.read_message(current, key, key), 'message-0')
+        self.assertIsNone(reopened.read_message(current, entry.digest('fresh'), entry.digest('fresh')))
+        with self.assertRaises(entry.PreparationError) as conflict:
+            reopened.read_message(current, key, entry.digest('changed'))
+        self.assertEqual(conflict.exception.code, 'event_conflict')
+        index = json.loads(reopened._message_path(key).read_bytes())
+        reopened.commit_outer(expected_revision=current.revision, outer={'later': True})
+        reopened._safe(Path('commits') / str(index['revision'])).unlink()
+        cold = storage.StateStore(self.path)
+        with self.assertRaises(entry.PreparationError):
+            cold.read_message(cold.open_current(), key, key)
+
+    def test_message_missing_locator_and_directory_object_fail_closed(self):
+        key = self.message_archive_boundary()
+        self.store._message_path(key).unlink()
+        cold = storage.StateStore(self.path)
+        with self.assertRaises(entry.PreparationError):
+            cold.read_message(cold.open_current(), key, key)
+        current = storage.StateStore(self.path).open_current()
+        self.store._path(current.root['message_directory']['sha256']).unlink()
+        cold = storage.StateStore(self.path)
+        with self.assertRaises(entry.PreparationError):
+            cold.read_message(cold.open_current(), entry.digest('fresh'), entry.digest('fresh'))
+
+    def test_message_prepared_locator_cannot_ack_before_original_root_commit(self):
+        original_write = storage.atomic_write
+        def fail_root(path, data):
+            if Path(path) == self.path and json.loads(data).get('revision') == 3:
+                raise OSError('before original message root CAS')
+            return original_write(path, data)
+        with patch.object(storage, 'atomic_write', side_effect=fail_root):
+            with self.assertRaisesRegex(OSError, 'before original message root CAS'):
+                self.message_archive_boundary()
+        key = entry.digest({'original': 'message'})
+        cold = storage.StateStore(self.path)
+        self.assertEqual(cold.open_current().revision, 2)
+        self.assertTrue(cold._message_path(key).exists())
+        self.assertIsNone(cold.read_message(cold.open_current(), key, key))
+
     def test_final_large_audit_does_not_consume_normal_receipt_read_budget(self):
         originals = [self.store.write_object(self.current.run_id, 'evidence', {'original': marker * (10 * 1024 * 1024)})
                      for marker in ('a', 'b')]
@@ -316,6 +370,83 @@ class StateArchiveTests(unittest.TestCase):
 
 
 class ArchiveOwnerTests(ProgressTests):
+    def test_archive_event_seal_retires_completed_message_keys_from_current_stage(self):
+        self.begin()
+        owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+        original_control = entry.digest(owner.state['control'])
+        samples = []
+        # Scale records only: use the original owner's real save/Store CAS.
+        # These completed telemetry records grant no role or write release.
+        for batch in range(2):
+            for number in range(256):
+                identity = 'message-event:' + str(batch * 256 + number)
+                source = {'event_id': identity, 'receipt': {'ref': 'native:message-fixture'},
+                    'result': {'delivery_id': identity, 'status': 'needs_input',
+                               'payload': {'question': identity}}}
+                owner.state['events'][identity] = {'digest': entry.digest(source), 'applied': True}
+                owner.state.setdefault('observed_messages', {})[owner.message_key(source)] = identity
+            owner.save()
+            reopened = storage.StateStore(self.checkpoint)
+            current = reopened.open_current()
+            stage = reopened.read_subject(current, owner.state['stage_subject']).value
+            self.assertEqual(entry.digest(stage['control']), original_control)
+            self.assertTrue(current.root.get('event_segments'))
+            samples.append({'events': len(stage['events']),
+                'observed_messages': len(stage.get('observed_messages', {})),
+                'stage_bytes': current.root['subjects'][owner.state['stage_subject']]['size']})
+        print(json.dumps({'archive_message_index_samples': samples}, sort_keys=True))
+        self.assertEqual([sample['events'] for sample in samples], [0, 0])
+        self.assertEqual([sample['observed_messages'] for sample in samples], [0, 0],
+                         'sealed completed message keys must leave the current stage')
+
+    def test_archive_meaningful_message_replays_exact_original_after_seal(self):
+        self.begin()
+        self.invoke('observe', self.observation())
+        original = self.observation('idle', 'result', {'delivery_id': 'archive-question',
+            'status': 'needs_input', 'payload': {'question': 'Choose the original behavior'}})
+        first = self.invoke('observe', original)
+        pending = copy.deepcopy(first['pending'])
+        owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+        key = owner.message_key(original)
+        self.assertEqual(owner.state['observed_messages'][key], original['event_id'])
+        for number in range(256):
+            identity = 'closed-telemetry:' + str(number)
+            owner.state['events'][identity] = {'digest': entry.digest(identity), 'applied': True}
+        owner.save()
+        self.assertNotIn(key, self.state()['observed_messages'])
+        store = storage.StateStore(self.checkpoint)
+        self.assertEqual(store.read_message(store.open_current(), key, key), original['event_id'])
+        repeated = self.observation('idle', 'result', original['result'])
+        repeated['event_id'] = 'same-original-message-new-event'
+        replay = self.invoke('observe', repeated)
+        self.assertTrue(replay['acknowledged'], replay)
+        self.assertEqual(replay['pending'], pending)
+        changed = copy.deepcopy(original)
+        changed['result']['payload']['question'] = 'Different content under the original event'
+        with self.assertRaises(entry.PreparationError) as conflict:
+            self.invoke('observe', changed, revision=0)
+        self.assertEqual(conflict.exception.code, 'event_conflict')
+        self.invoke('pause')
+        paused = self.invoke('observe', self.observation('stopped', 'result'))
+        self.assertEqual(paused['status'], 'paused', paused)
+        self.assertEqual(self.state()['pending'], pending)
+
+    def test_archive_pending_message_mapping_remains_current(self):
+        self.begin()
+        owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+        action = owner.state['host_action']['action_id']
+        key, pending = entry.digest('original-pending-message'), 'pending-message'
+        owner.state['events'][pending] = {'digest': key, 'applied': True, 'receipt_action': action}
+        owner.state['observed_messages'] = {key: pending}
+        for number in range(256):
+            identity = 'completed:' + str(number)
+            owner.state['events'][identity] = {'digest': entry.digest(identity), 'applied': True}
+        owner.save()
+        self.assertEqual(self.state()['observed_messages'], {key: pending})
+        self.assertIn(pending, self.state()['events'])
+        store = storage.StateStore(self.checkpoint)
+        self.assertIsNone(store.read_message(store.open_current(), key, key))
+
     def test_archive_production_256_events_preserves_original_replay(self):
         self.archive_original_owner_flow(reject_closed=False)
         first = None
@@ -710,6 +841,54 @@ class ArchiveCompletionTests(ArchiveOwnerTests):
             'receipt': self.receipt(slot['record'], ref='native:archive-executor')})
         self.assertEqual(result['error']['code'], 'identity_mismatch', result)
         self.assertFalse(self.state()['control']['context']['handoff_progress']['executions'][0]['stopped'])
+
+    def test_archive_fresh_native_retains_original_binding_eligibility(self):
+        self.archive_original_owner_flow(reject_closed=False)
+        slot = self.allocation_slot('slice-two')
+        result = self.invoke('allocation', {'allocation_id': 'slice-two', 'operation': 'bind',
+            'receipt': self.receipt(slot['record'], ref='native:archive-fresh')})
+        self.assertEqual(result['next_action']['result']['status'], 'bound', result)
+        self.assertTrue(result['next_action']['result']['write_release'])
+        execution = self.state()['control']['context']['handoff_progress']['executions'][0]
+        self.assertEqual((execution['agent_ref'], execution['state']), ('native:archive-fresh', 'assigned'))
+
+    def archive_original_actor_missing_proof(self, missing):
+        self.archive_original_owner_flow(reject_closed=False)
+        slot = self.allocation_slot('slice-two')
+        request = {'allocation_id': 'slice-two', 'operation': 'bind',
+                   'receipt': self.receipt(slot['record'], ref='native:archive-executor')}
+        denied = self.invoke('allocation', request)
+        self.assertEqual(denied['error']['code'], 'identity_mismatch', denied)
+        store = storage.StateStore(self.checkpoint)
+        current = store.open_current()
+        locator = store._native_archive_path('native:archive-executor', 'execution')
+        index = json.loads(locator.read_bytes())
+        if missing == 'locator':
+            locator.unlink()
+        else:
+            self.assertLess(index['revision'], current.revision)
+            marker = store._safe(Path('commits') / str(index['revision']))
+            self.assertTrue(marker.exists())
+            marker.unlink()
+        result = self.invoke('allocation', request)
+        state = self.state()['control']['context']['handoff_progress']
+        output = result.get('next_action') or {}
+        fact = output.get('result') or {}
+        print(json.dumps({'archive_missing_proof': missing,
+            'new_write_release': fact.get('write_release'),
+            'new_result_status': fact.get('status'),
+            'new_execution': {key: state['executions'][0].get(key)
+                for key in ('agent_ref', 'state', 'stopped', 'write_release')},
+            'native_locator_exists': locator.exists(),
+            'current_revision': storage.StateStore(self.checkpoint).open_current().revision,
+            'original_archive_revision': index['revision']}, sort_keys=True))
+        self.assertIsNone(fact.get('write_release'), 'missing original evidence must not grant a new writer lease')
+
+    def test_archive_original_actor_missing_locator_cannot_bind_another_execution(self):
+        self.archive_original_actor_missing_proof('locator')
+
+    def test_archive_original_actor_missing_commit_marker_cannot_bind_another_execution(self):
+        self.archive_original_actor_missing_proof('commit-marker')
 
 
 class ArchiveAffectedTests(unittest.TestCase):

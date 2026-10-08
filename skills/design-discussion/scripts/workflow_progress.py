@@ -2754,6 +2754,9 @@ class Progress:
             pinned = {(self.state.get('transaction_source') or {}).get('event_id'),
                       (self.state.get('deferred_observation') or {}).get('event_id'),
                       ((self.state.get('host_action') or {}).get('creation_receipt') or {}).get('event_id')}
+            pending_actions = {action['action_id'] for action in self.unresolved_host_actions()}
+            pinned.update(identity for identity, event in self.state.get('events', {}).items()
+                          if event.get('receipt_action') in pending_actions)
             previous_events = self.state.get('events', {})
             eligible = [identity for identity, event in previous_events.items()
                         if event.get('applied') is True and identity not in pinned][:256]
@@ -2761,6 +2764,11 @@ class Progress:
             if len(eligible) == 256:
                 observations = {item['event_id']: item for item in self.state.get('observations', []) if item.get('event_id')}
                 candidates = {identity: dict(event) for identity, event in previous_events.items()}
+                for key, identity in self.state.get('observed_messages', {}).items():
+                    if identity in eligible:
+                        require('message' not in candidates[identity], 'event_conflict',
+                                'one original event cannot name different completed messages')
+                        candidates[identity]['message'] = {'key': key, 'digest': key}
                 for identity in eligible:
                     if identity in observations:
                         observation = observations[identity]
@@ -2784,6 +2792,8 @@ class Progress:
                 self.state['events'] = events
                 self.state['observations'] = [item for item in self.state.get('observations', [])
                                               if item.get('event_id') not in archived_ids]
+                self.state['observed_messages'] = {key: identity for key, identity in
+                    self.state.get('observed_messages', {}).items() if identity not in archived_ids}
                 for identity in archived_ids:
                     for kind, fingerprint in candidates[identity].get('fingerprints', {}).items():
                         if kind in {'response', 'call'}:
@@ -6086,6 +6096,9 @@ class Progress:
                 entry.nonempty(data["result"]["payload"].get("question"))
         message_key = self.message_key(data) if "result" in data else None
         duplicate_message = message_key is not None and message_key in s.get("observed_messages", {})
+        if message_key is not None and not duplicate_message:
+            message_store = state_store.open_store(self.path)
+            duplicate_message = message_store.read_message(message_store.open_current(), message_key, message_key) is not None
         if duplicate_message:
             s["events"][data["event_id"]]["applied"] = True
             self.save()

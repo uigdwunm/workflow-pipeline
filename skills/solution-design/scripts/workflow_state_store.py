@@ -849,16 +849,116 @@ class StateStore:
         digest = hashlib.sha256(ref.encode()).hexdigest()
         return self._safe(Path('native-archives') / kind / digest[:2] / digest[2:4] / digest)
 
+    def _archive_directory_node(self, reference, run_id, prefix):
+        node = self.read_evidence(reference, run_id=run_id, maximum=16 * 1024)['value']
+        require(isinstance(node, dict) and node.get('format') == 'archive-exact-directory-v1',
+                'archive identity directory changed', 'state_object_corrupt')
+        if set(node) == {'format', 'key', 'fact'}:
+            require(isinstance(node['key'], str) and len(node['key']) == 64 and
+                    all(char in '0123456789abcdef' for char in node['key']) and
+                    node['key'].startswith(prefix) and isinstance(node['fact'], dict),
+                    'archive directory leaf changed', 'state_object_corrupt')
+        else:
+            require(set(node) == {'format', 'prefix', 'children'} and isinstance(node['prefix'], str) and
+                    prefix == node['prefix'][:len(prefix)] and len(node['prefix']) < 64 and
+                    all(char in '0123456789abcdef' for char in node['prefix']) and
+                    isinstance(node['children'], dict) and 2 <= len(node['children']) <= 16 and
+                    all(char in '0123456789abcdef' and len(char) == 1 for char in node['children']),
+                    'archive directory branch changed', 'state_object_corrupt')
+        return node
+
+    def _archive_directory_lookup(self, reference, run_id, key):
+        """Authenticated membership/absence along one bounded hash path."""
+        prefix = ''
+        while reference is not None:
+            node = self._archive_directory_node(reference, run_id, prefix)
+            if 'key' in node:
+                return node['fact'] if node['key'] == key else None
+            if not key.startswith(node['prefix']):
+                return None
+            prefix = node['prefix'] + key[len(node['prefix'])]
+            reference = node['children'].get(prefix[-1])
+        return None
+
+    def _archive_directory_insert(self, reference, run_id, key, fact, prefix=''):
+        leaf = {'format': 'archive-exact-directory-v1', 'key': key, 'fact': fact}
+        if reference is None:
+            return self.write_object(run_id, 'evidence', leaf)
+        node = self._archive_directory_node(reference, run_id, prefix)
+        original_key = node.get('key', node.get('prefix'))
+        common = 0
+        while common < min(len(key), len(original_key)) and key[common] == original_key[common]:
+            common += 1
+        if 'key' in node and key == original_key:
+            require(node['fact'] == fact, 'archive exact key was reused with different facts', 'archive_conflict')
+            return reference
+        if common < len(original_key) or 'key' in node:
+            fresh = self.write_object(run_id, 'evidence', leaf)
+            return self.write_object(run_id, 'evidence', {'format': 'archive-exact-directory-v1',
+                'prefix': key[:common], 'children': {original_key[common]: reference, key[common]: fresh}})
+        branch = node['prefix']
+        char = key[len(branch)]
+        children = dict(node['children'])
+        children[char] = self._archive_directory_insert(children.get(char), run_id, key, fact, branch + char)
+        return self.write_object(run_id, 'evidence', {**node, 'children': children})
+
+    def _archive_native(self, current, manifest_ref):
+        manifest = self.read_evidence(manifest_ref, run_id=current.run_id, kind='archive-manifest')['value']
+        identity = manifest['subject_id']
+        if not identity.startswith(('allocation:', 'review:')):
+            return None
+        original = self._read_archive_manifest(current, manifest_ref, identity)
+        slot = original.value['slot']
+        kind = 'execution' if identity.startswith('allocation:') else 'review'
+        native = ((slot.get('record') or {}).get('acceptance') or {}).get('role_ref') if kind == 'execution' else slot.get('ref')
+        return (kind, native, identity) if native else None
+
+    def _prepare_archive_identity_directories(self, current, run_id, root):
+        if current is not None:
+            require('native_directory' in current.root and 'message_directory' in current.root,
+                    'retain the original archive runtime for this checkpoint', 'legacy_run_requires_original_runtime')
+        root['native_directory'] = current.root['native_directory'] if current else None
+        root['message_directory'] = current.root['message_directory'] if current else None
+        projection = CurrentProjection(run_id, root['revision'], root, {})
+        for item in root.get('archives', []):
+            native = self._archive_native(projection, item['reference'])
+            if native is None:
+                continue
+            kind, ref, identity = native
+            key = entry.digest([kind, ref])
+            existing = self._archive_directory_lookup(root['native_directory'], run_id, key)
+            if existing is None:
+                fact = {'subject_id': identity, 'reference': item['reference'], 'run_id': run_id,
+                        'revision': root['revision'], 'native_ref': ref}
+                root['native_directory'] = self._archive_directory_insert(root['native_directory'], run_id, key, fact)
+        for segment_ref in root.get('event_segments', []):
+            segment = self.read_evidence(segment_ref, run_id=run_id, kind='event-segment')['value']
+            for offset, item in enumerate(segment['events']):
+                message = item['value'].get('message')
+                if message is not None:
+                    fact = {'run_id': run_id, 'revision': root['revision'], 'segment': segment_ref,
+                            'offset': offset, 'event_id': item['event_id'], **message}
+                    root['message_directory'] = self._archive_directory_insert(
+                        root['message_directory'], run_id, message['key'], fact)
+
     def read_native_archive(self, current, ref):
         """Locate one original stopped role by its native identity, never a scan."""
         for kind in ('execution', 'review'):
             path = self._native_archive_path(ref, kind)
+            require('native_directory' in current.root, 'archive identity directory is unavailable', 'state_authority_missing')
+            expected = self._archive_directory_lookup(current.root['native_directory'], current.run_id, entry.digest([kind, ref]))
+            if expected is not None:
+                require(path.exists(), 'original native archive locator is missing', 'state_object_missing')
             if not path.exists():
                 continue
             index = json.loads(self._read(path, 16 * 1024))
             require(index.get('native_ref') == ref, 'archived native identity changed', 'state_object_corrupt')
-            if not self._archive_proof(current, index):
+            committed = self._archive_proof(current, index)
+            if expected is None:
+                require(not committed, 'committed native identity differs from its original directory', 'state_object_corrupt')
                 continue
+            require({key: index.get(key) for key in expected} == expected and committed,
+                    'original native archive commit proof is missing or changed', 'state_object_corrupt')
             original = self._read_archive_manifest(current, index['reference'], index['subject_id'])
             slot = original.value['slot']
             native = ((slot.get('record') or {}).get('acceptance') or {}).get('role_ref') if index['subject_id'].startswith('allocation:') else slot.get('ref')
@@ -1036,6 +1136,10 @@ class StateStore:
                 require(isinstance(item, dict) and set(item) == {'subject_id', 'reference'},
                         'archive directory entry changed', 'state_object_corrupt')
                 original = self._read_archive_manifest(current, item['reference'], item['subject_id'])
+                native = self._archive_native(current, item['reference'])
+                if native is not None:
+                    require(self.read_native_archive(current, native[1]) is not None,
+                            'archive lost its original native identity proof', 'state_object_corrupt')
                 ledger = original.value.get('ledger_ref')
                 if ledger is not None:
                     register_ledger(ledger)
@@ -1062,6 +1166,39 @@ class StateStore:
                 'bounded original event ID required')
         digest = hashlib.sha256(encode([run_id, event_id])).hexdigest()
         return self._safe(Path('events') / digest[:2] / digest[2:4] / digest)
+
+    def _message_path(self, key):
+        self._path(key)
+        return self._safe(Path('messages') / key[:2] / key[2:4] / key)
+
+    def read_message(self, current, key, digest):
+        self._path(key)
+        require('message_directory' in current.root, 'original message directory is unavailable', 'state_authority_missing')
+        expected = self._archive_directory_lookup(current.root['message_directory'], current.run_id, key)
+        if expected is None:
+            return None
+        path = self._message_path(key)
+        require(path.exists(), 'original message locator is missing', 'state_object_missing')
+        index = json.loads(self._read(path, 16 * 1024))
+        require({field: index.get(field) for field in expected} == expected and
+                expected['key'] == key and expected['digest'] == digest,
+                'original message key was reused with another digest', 'event_conflict')
+        marker = self._safe(Path('commits') / str(index['revision']))
+        if not marker.exists() and index['revision'] == current.revision and index['root'] == current.reference['sha256']:
+            self._ensure_marker(current)
+        require(marker.exists(), 'original message commit proof is missing', 'state_object_missing')
+        proof = json.loads(self._read(marker, 16 * 1024))
+        require(proof.get('root') == index['root'] and index['segment'] in proof.get('event_segments', []),
+                'message lacks its original committed segment', 'state_object_corrupt')
+        segment = self.read_evidence(index['segment'], run_id=current.run_id, kind='event-segment')['value']
+        offset = index['offset']
+        require(type(offset) is int and 0 <= offset < len(segment['events']) <= 256,
+                'original message offset changed', 'state_object_corrupt')
+        original = segment['events'][offset]
+        require(original['event_id'] == index['event_id'] and
+                original['value'].get('message') == {'key': key, 'digest': digest},
+                'original message event changed', 'state_object_corrupt')
+        return index['event_id']
 
     def prepare_event_segment(self, current, events, *, pinned=()):
         require(isinstance(events, dict), 'current events must be an object')
@@ -1470,6 +1607,7 @@ class StateStore:
 
     def _commit_root(self, current, run_id, root):
         revision, receipts, metadata = root['revision'], root['receipts'], root['metadata']
+        self._prepare_archive_identity_directories(current, run_id, root)
         reference = self.write_object(run_id, 'root', root)
         marker = {'revision': revision, 'root': reference['sha256'], 'receipts': list(receipts),
                   **{key: root[key] for key in ('archives', 'archive_directory', 'event_segments') if key in root}}
@@ -1516,11 +1654,9 @@ class StateStore:
                 native = (((slot.get('record') or {}).get('acceptance') or {}).get('role_ref')
                           if subject_id.startswith('allocation:') else slot.get('ref'))
                 if native:
-                    prior = self.read_native_archive(current, native)
-                    # Preserve the first original role. In particular, a later
-                    # review can never hide that this actor implemented a path.
-                    if prior is None or subject_id.startswith('allocation:') and prior.subject_id.startswith('review:'):
-                        kind = 'execution' if subject_id.startswith('allocation:') else 'review'
+                    kind = 'execution' if subject_id.startswith('allocation:') else 'review'
+                    first = self._archive_directory_lookup(root['native_directory'], run_id, entry.digest([kind, native]))
+                    if first['reference'] == archive['reference'] and first['revision'] == revision:
                         atomic_write(self._native_archive_path(native, kind), encode({**index, 'native_ref': native}))
                 if subject_id.startswith('review:') and value.get('claim_ref'):
                     claim = self.read_evidence(value['claim_ref'], run_id=run_id)['value']['review_claim']
@@ -1534,6 +1670,9 @@ class StateStore:
                 index = {'run_id': run_id, 'event_id': item['event_id'], 'segment': segment_ref,
                          'offset': offset, 'revision': revision, 'root': reference['sha256']}
                 atomic_write(self._event_path(run_id, item['event_id']), encode(index))
+                message = item['value'].get('message')
+                if message is not None:
+                    atomic_write(self._message_path(message['key']), encode({**index, **message}))
                 for kind, fingerprint in item['value'].get('fingerprints', {}).items():
                     known = (self.poll_fingerprint(kind, fingerprint['key']) if kind in {'response', 'call'} else
                              self._event_fingerprint(kind, fingerprint['key']))
