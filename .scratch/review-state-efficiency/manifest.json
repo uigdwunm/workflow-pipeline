@@ -1587,7 +1587,8 @@
       "generated_outputs": [],
       "implementation_note": "T01 ledger B 准备读取：原 stage subject 的 prepare intent、scope/基线、原 ledger pointer/revision 有限读取及 HEAD 漂移拒绝。正常邻居仅证明 B 守卫与 ledger start-dispatch；baseline 已有 full-topic entry equality 导致后续 verify_launch entry_changed，保持明确拒绝，不宣称完整 ledger Stage3 launch 受支持。不得忽略 topic 权威字段、重采 expected 或扩展延期初始化。",
       "t06_g1_remaining_scope": "write_planning_spec uses v2 ScopeProgress producer with v1 fence. Only correct valid fence at existing planning seam; no attached initialization/ingress feature expansion.",
-      "t06_g2_remaining_scope": "G3 only test_attached_plan_revision_uses_original_ledger_record original candidate-ready setup after actual ledger activation/execution: real applicable local/Ticket acceptance and early checks. Evidence t06-g1/22-attached-revision-fixed.log at line623 review_incomplete after the corrected v2 consumer. Preserve original ledger/CAS/replay/scope assertions and unsupported initialization guards."
+      "t06_g2_remaining_scope": "G3 only test_attached_plan_revision_uses_original_ledger_record original candidate-ready setup after actual ledger activation/execution: real applicable local/Ticket acceptance and early checks. Evidence t06-g1/22-attached-revision-fixed.log at line623 review_incomplete after the corrected v2 consumer. Preserve original ledger/CAS/replay/scope assertions and unsupported initialization guards.",
+      "t06_g4_remaining_scope": "Temporary exact-boundary probe in original attached ledger revision test only: capture original ticket-check adapter exception cause/actual actor/request/version/authority, preserve original ledger/CAS/execution/blocked state. Remove observer before freeze; production seam changes require confirmed cause and recorded scope."
     },
     {
       "path": "tests/runtime/test_business_recovery.py",
@@ -3333,7 +3334,8 @@
           "tests/runtime/test_state_archive.py",
           "tests/runtime/test_workflow_progress.py",
           "tests/runtime/test_layered_review.py",
-          "tests/runtime/test_plan_revision_progress.py"
+          "tests/runtime/test_plan_revision_progress.py",
+          "tests/runtime/test_attached_flow_progress.py"
         ],
         "evidence": [
           "t06-g4/01-capacity-red.receipt.json",
