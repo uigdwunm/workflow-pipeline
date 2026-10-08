@@ -1,6 +1,6 @@
 {
-  "status": "accepted-reduced-scope-implementation-paused",
-  "authority": "user-requested scope reduction; planning only now, explicit resume required for implementation",
+  "status": "accepted-reduced-scope-implementation-resumed",
+  "authority": "human 恢复 after accepted grouped execution revision e503b46; existing reduced ordinary-local scope only; deferred mechanisms and deployment not authorized",
   "basis_commit": "61f105f1d8bdb3ebc1b574e3104332621dc31ec8",
   "requirement_sha256": "dcc2adf2141dd49a9d383fc30a62388d267fb35e58fdddbdad1824d367c2dd77",
   "policy": {
@@ -1387,26 +1387,30 @@
       "path": "tests/runtime/test_plan_driven_dispatch.py",
       "operation": "modify",
       "tickets": [
-        "T02"
+        "T02",
+        "T06"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_g1_remaining_scope": "inline_plan still emits schema1/no slices; positive mutations need slices, activated revision parses v1, and unbound new_active_flow calls absent instance helper. Original dispatch assertions unchanged."
     },
     {
       "path": "tests/runtime/test_execution_plans.py",
       "operation": "modify",
       "tickets": [
         "T02",
-        "T03"
+        "T03",
+        "T06"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture；T03完整行为/读写耦合/AC验证归属预检的真实模块边界",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_g1_remaining_scope": "ScopeProgressTests.planning_candidate now produces v2; positive consumers still parse v1 and mutate functions without corresponding slices. Only positive producer/consumer adaptation; retain malformed/legacy refusal assertions."
     },
     {
       "path": "tests/runtime/test_workflow_control.py",
@@ -1432,19 +1436,22 @@
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": [],
-      "implementation_note": "T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal."
+      "implementation_note": "T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal.",
+      "t06_g1_remaining_scope": "new_active_flow shared by unbound dispatch fixture needs explicit shared helper invocation; inline_revision_b_delivery new helper must be included in existing slice; do not alter revision business/refusal assertions."
     },
     {
       "path": "tests/runtime/test_workflow_control_git.py",
       "operation": "modify",
       "tickets": [
-        "T04"
+        "T04",
+        "T06"
       ],
       "kind": "test",
       "reason": "修改新协议核心行为断言及相关fixture",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_g1_remaining_scope": "WorkflowGitTests.plan_evidence still emits schema1/no slices before inline_authority; adapt original valid Git evidence to v2 and preserve original diff/permission refusals."
     },
     {
       "path": "tests/runtime/test_repository_validation.py",
@@ -1562,7 +1569,8 @@
         }
       ],
       "generated_outputs": [],
-      "implementation_note": "T01 ledger B 准备读取：原 stage subject 的 prepare intent、scope/基线、原 ledger pointer/revision 有限读取及 HEAD 漂移拒绝。正常邻居仅证明 B 守卫与 ledger start-dispatch；baseline 已有 full-topic entry equality 导致后续 verify_launch entry_changed，保持明确拒绝，不宣称完整 ledger Stage3 launch 受支持。不得忽略 topic 权威字段、重采 expected 或扩展延期初始化。"
+      "implementation_note": "T01 ledger B 准备读取：原 stage subject 的 prepare intent、scope/基线、原 ledger pointer/revision 有限读取及 HEAD 漂移拒绝。正常邻居仅证明 B 守卫与 ledger start-dispatch；baseline 已有 full-topic entry equality 导致后续 verify_launch entry_changed，保持明确拒绝，不宣称完整 ledger Stage3 launch 受支持。不得忽略 topic 权威字段、重采 expected 或扩展延期初始化。",
+      "t06_g1_remaining_scope": "write_planning_spec uses v2 ScopeProgress producer with v1 fence. Only correct valid fence at existing planning seam; no attached initialization/ingress feature expansion."
     },
     {
       "path": "tests/runtime/test_business_recovery.py",
@@ -1930,7 +1938,7 @@
     },
     {
       "path": "tests/runtime/test_stage_scope_transfer.py",
-      "operation": "verify",
+      "operation": "modify",
       "tickets": [
         "T06"
       ],
@@ -1938,7 +1946,8 @@
       "reason": "协议变更完整回归；只有证据表明旧内联结构/版本fixture需适配才修改",
       "exists_at_design": true,
       "symbols": [],
-      "generated_outputs": []
+      "generated_outputs": [],
+      "t06_g1_remaining_scope": "setUp adds AP1-01 to v2 ScopeProgress plan but writes v1 fence and omits slice. Exact direct producer dependency; only setUp valid v2 catalog/slice, preserve original manifest/seal/ceiling assertions."
     },
     {
       "path": "tests/runtime/test_stage_start_verification.py",
@@ -3242,7 +3251,22 @@
       "review": "same author and independent reviewer within group; reuse applicable evidence with original source, final Ticket/cross-Ticket incremental coverage and two delivery axes",
       "evidence": "forward command/source/result binding only; old missing fields unknown; original paused full-gate evidence remains bound to d2c15eb",
       "management": "one current dispatcher <=16KiB; references T06 repair index; no repeated poll snapshots, capacity increase or historical evidence deletion",
-      "scope": "execution arrangement only; no new Ticket/ADR/runtime/runner/evaluation feature; deferred scope and frozen requirement unchanged"
+      "scope": "execution arrangement only; no new Ticket/ADR/runtime/runner/evaluation feature; deferred scope and frozen requirement unchanged",
+      "g1_confirmed_dependency": {
+        "basis": "e503b466dd8297d8056cdd5e0041e8a8ccc13085",
+        "evidence": "original d2c15eb full gate, log lines2258/3499/867/306/4343/504; real direct fixture reads confirmed by /root/t06_g1",
+        "paths": [
+          "tests/runtime/test_execution_plans.py",
+          "tests/runtime/test_workflow_control_git.py",
+          "tests/runtime/test_plan_driven_dispatch.py",
+          "tests/runtime/test_plan_revision_progress.py",
+          "tests/runtime/test_stage_scope_transfer.py",
+          "tests/runtime/test_attached_flow_progress.py"
+        ],
+        "scope": "six existing tests only, v2 positive producers/consumers and shared helper binding; no runtime change or legacy refusal weakening",
+        "repair_index_ref": "issues/06-integrate-measure.md",
+        "resume": "human 恢复; subsequent diagnostic group writes serialized by root"
+      }
     }
   }
 }

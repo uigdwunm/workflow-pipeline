@@ -1,7 +1,7 @@
 # 06 — 必要兼容与最终交付验证（收缩修订）
 
-Status: paused
-Design status: accepted with scope amendment — 收缩边界保留；本次只更新执行安排，未恢复实现
+Status: in-progress — 用户 2026-10-08 明确恢复
+Design status: accepted with scope amendment — 收缩边界保留；按 G1–G4 恢复执行
 Plan revision: 2026-10-08（原收缩修订 2026-10-07）
 Blocked by: 03, 04, 05
 Spec: ../PRD.md
@@ -40,6 +40,14 @@ Execution rules: ../execution-policy.md
 每组开写前在本节维护一个有限记录：`原 test ID/日志引用 → 确认原因或 unknown → producer/consumer → 精确写路径及 manifest 权限 → 快反馈命令 → 受影响回归 → reviewer 结论/证据引用`。本文件是唯一修复索引；管理记录只留当前组、阻塞和引用，不复制全部 trace。原因未确定前不批量晋升 verify 路径，也不机械替换所有 v1 字符串。
 
 优先定位 G1/G2 的共同入口并收敛合法基线，再处理其消费者；G4 可独立先诊断，不能预设为夹具。相互独立的只读诊断按需并行；同文件/共享入口只有一个写入者，紧密依赖合组或串行。同组固定实现者和独立 reviewer，findings 回原上下文修复，稳定后检查累计影响；每个补丁不新建任务或完整报告。
+
+## 当前修复索引
+
+G1：原失败日志 2258/3499/867/306/4343/504。已确认正输入 v2 与旧 v1 消费者不一致、函数变更未同步 slices，以及 unbound fixture 调用缺少实例 helper。精确写范围为 `test_execution_plans.py`、`test_workflow_control_git.py`、`test_plan_driven_dispatch.py`、`test_plan_revision_progress.py`、`test_stage_scope_transfer.py` 的原 setUp、`test_attached_flow_progress.py` 的 write_planning_spec（均在 tests/runtime）。manifest 已记录实际依赖；不改生产源码。首次快反馈：`python3 scripts/run_tests.py --test-file tests/runtime/test_execution_plans.py --match test_sealed_scope_exposes_versioned_execution_plan_envelope --jobs 1 --nice 10`。随后覆盖原 malformed arrays、scope transfer ceiling、standalone plan、真实 Git diff、multifile dispatch 和 inline revision B delivery；发现其他失败先核归属。实现者 `/root/t06_g1`，独立审查和原执行证据待补。
+
+G2/G3：原 finite current 被当作 full owner、合法 runner 初始化提前调用 open_current、replacement stop census 顺序已有只读证据；具体写范围和最小回归集待 G1 写入停稳后确认，当前不并行写入。
+
+G4：原容量耗尽用例已在 e503b46 经项目 runner 单例复现（3.2 秒、exit1），见 implementation 外部 `t06-g4/01-capacity-red.receipt.json` / `.log`。无新业务 dispatch；错误发生在原 archive intent 保存阶段。容量预检/错误返回路径继续诊断，保留 checkpoint 不变、无派发及固定预算断言，尚未修改源码。
 
 ## 验证顺序与交付
 
