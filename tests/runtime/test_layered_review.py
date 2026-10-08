@@ -1066,6 +1066,36 @@ class LayeredReviewTests(fixture.ProgressTests):
             self.assertEqual(self.checkpoint.read_bytes(), before)
 
     def test_recovered_dispatcher_consumes_original_layered_claims(self):
+        self.recovered_dispatcher_claims(recoveries=1)
+
+    def test_two_dispatcher_recoveries_preserve_original_attempt_chain(self):
+        self.layered_flow()
+        self.recover_layered_dispatcher()
+        self.recover_layered_dispatcher(replacement='native:dispatcher-D3')
+        context = self.state()['control']['context']
+        checkpoint = context['handoff_progress']
+        original = checkpoint['recovery_history'][0]
+        latest = checkpoint['recovery']
+        self.assertEqual(original['dispatcher_ref'], 'native:dispatcher')
+        self.assertEqual(original['activation']['replacement_ref'], latest['dispatcher_ref'])
+        self.assertEqual(latest['attempt'], progress.control.digest([
+            original['recovery_id'], latest['dispatcher_ref']]))
+        self.assertEqual(latest['activation']['replacement_ref'], context['carrier']['ref'])
+        self.assertEqual(context['carrier']['attempt'], progress.control.digest([
+            latest['recovery_id'], context['carrier']['ref']]))
+        self.assertEqual(context['carrier']['ref'], 'native:dispatcher-D3')
+        records = [progress.handoff.unseal(record) for record in self.state()['recovery_dispatch_history']]
+        self.assertEqual(len(records), 2)
+        for recovery, record in zip((original, latest), records):
+            self.assertEqual(record['request']['attempt'], recovery['attempt'])
+            self.assertEqual(record['request']['role'], 'implementation-dispatcher')
+        self.assertEqual(records[-1]['receipts'], [], 'D2 only received its original prepared creation and host query')
+        progress.control.validate_current_context(context)
+
+    def test_twice_recovered_dispatcher_consumes_original_layered_claims(self):
+        self.recovered_dispatcher_claims(recoveries=2)
+
+    def recovered_dispatcher_claims(self, *, recoveries):
         candidate = self.layered_flow()
         for ticket in ('A', 'B'):
             for number in (1, 2):
@@ -1073,8 +1103,10 @@ class LayeredReviewTests(fixture.ProgressTests):
             self.ticket_review(candidate, ticket)
         self.delivery_reviews(candidate)
         before = copy.deepcopy(self.state()['control']['context']['handoff_progress']['review_claims'])
-        self.recover_layered_dispatcher()
-        self.assertEqual(self.state()['control']['context']['carrier']['ref'], 'native:dispatcher-D2')
+        for generation in range(2, recoveries + 2):
+            self.recover_layered_dispatcher(replacement='native:dispatcher-D' + str(generation))
+        dispatcher = 'native:dispatcher-D' + str(recoveries + 1)
+        self.assertEqual(self.state()['control']['context']['carrier']['ref'], dispatcher)
         self.assertEqual(self.state()['control']['context']['handoff_progress']['review_claims'], before)
         applicable = self.invoke('control', {'action': 'review-applicability', 'evidence': {
             'candidate': candidate, 'reference': 'controller:recovered-applicability'},
@@ -1127,19 +1159,47 @@ class LayeredReviewTests(fixture.ProgressTests):
                     elif label == 'revoked-stop':
                         rejected.setdefault('native_adverse', {})['native:dispatcher'] = {'status': 'running'}
                     elif label == 'same-ref':
-                        recovery['activation']['replacement_ref'] = 'native:dispatcher'
+                        recovery['activation']['replacement_ref'] = recovery['dispatcher_ref']
                     else:
                         rejected['dispatch']['acceptance'] = None
                     with self.subTest(label=label), store.measure_writes(sequence=True):
                         with self.assertRaises((progress.entry.PreparationError, progress.control.ControlError)):
                             original_freeze(rejected, store, current, prior)
+                if recoveries == 2:
+                    for label in ('malformed', 'disconnected', 'cycle', 'duplicate', 'historical-revoked',
+                                  'missing-creation', 'forged-creation'):
+                        rejected = copy.deepcopy(state)
+                        checkpoint = rejected['control']['context']['handoff_progress']
+                        historical = checkpoint['recovery_history'][0]
+                        if label == 'malformed':
+                            historical['activation'].pop('recovery_id')
+                        elif label == 'disconnected':
+                            historical['activation']['replacement_ref'] = 'native:disconnected'
+                            historical['receipts'][-1]['ref'] = 'native:disconnected'
+                        elif label == 'cycle':
+                            checkpoint['recovery']['activation']['replacement_ref'] = 'native:dispatcher'
+                            checkpoint['recovery']['receipts'][-1]['ref'] = 'native:dispatcher'
+                        elif label == 'duplicate':
+                            checkpoint['recovery_history'].append(copy.deepcopy(historical))
+                        elif label == 'missing-creation':
+                            historical['receipts'] = []
+                        elif label == 'forged-creation':
+                            historical['receipts'][-1]['intent_id'] = 'forged-predecessor-creation'
+                        else:
+                            rejected.setdefault('native_adverse', {})['native:dispatcher'] = {'status': 'running'}
+                        with self.subTest(label=label), store.measure_writes(sequence=True):
+                            with self.assertRaises((progress.entry.PreparationError, progress.control.ControlError)):
+                                original_freeze(rejected, store, current, prior)
                 owner = progress.Progress(self.checkpoint, {**current.root['outer'], progress.KEY: state})
-                with self.assertRaises(progress.entry.PreparationError) as no_grant:
-                    owner.finalization_owner('native:dispatcher')
-                self.assertEqual(no_grant.exception.code, 'result_incomplete')
+                for retired in ('native:dispatcher', 'native:dispatcher-D2') if recoveries == 2 else ('native:dispatcher',):
+                    with self.assertRaises(progress.entry.PreparationError) as no_grant:
+                        owner.finalization_owner(retired)
+                    self.assertEqual(no_grant.exception.code, 'result_incomplete')
             result = original_freeze(state, store, current, prior)
             self.assertNotIn('native:dispatcher', result)
-            self.assertIn('native:dispatcher-D2', result)
+            if recoveries == 2:
+                self.assertNotIn('native:dispatcher-D2', result)
+            self.assertIn(dispatcher, result)
             return result
         with fixture.patch.object(progress, 'freeze_implementation_native_owners', verify_retired_owner):
             self.finish_certificate_delivery(target, reviews)
@@ -1148,6 +1208,9 @@ class LayeredReviewTests(fixture.ProgressTests):
             self.state()['implementation_predecessor'])
         self.assertIn('native:dispatcher', prior['native_refs'])
         self.assertNotIn('native:dispatcher', prior['native_owner_refs'])
+        if recoveries == 2:
+            self.assertIn('native:dispatcher-D2', prior['native_refs'])
+            self.assertNotIn('native:dispatcher-D2', prior['native_owner_refs'])
 
     def test_git_cli_rejects_whole_unprepared_native_claim_artifact_set(self):
         candidate = self.layered_flow()
@@ -1432,19 +1495,31 @@ class LayeredReviewTests(fixture.ProgressTests):
         self.assertNotIn('ticket:A', self.state().get('review_activity', {}))
         self.assertNotIn('coverage', self.state()['control']['context']['handoff_progress'])
 
-    def recover_layered_dispatcher(self):
-        stopped = self.observation('stopped', 'result', ref='native:dispatcher')
+    def recover_layered_dispatcher(self, *, replacement='native:dispatcher-D2'):
+        original = self.state()['control']['context']['carrier']['ref']
+        if self.state()['host']['status'] == 'unknown':
+            # Exercise the original producer boundary; active/bound CLI resume
+            # legitimately waits and does not promise a fresh host query.
+            with progress.record_lock(self.checkpoint), progress.state_store.operation_store(self.checkpoint):
+                owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+                query = owner.query_host()
+            self.assertEqual(query['next_action']['operation'], 'inspect-host-state', query)
+            self.assertEqual(query['next_action']['payload']['ref'], original)
+        stopped = self.observation('stopped', 'result', ref=original)
         stopped['receipt']['raw'].update(resumable=False, dispatch_available=True)
         self.invoke('observe', stopped)
         context = self.state()['control']['context']
-        owner = {'controller_ref': 'task', 'reference': 'controller:layered-recovery'}
-        evidence = {'dispatcher_ref': 'native:dispatcher', 'attempt': context['carrier']['attempt'],
+        suffix = '' if original == 'native:dispatcher' else ':' + replacement
+        owner = {'controller_ref': 'task', 'reference': 'controller:layered-recovery' + suffix}
+        evidence = {'dispatcher_ref': original, 'attempt': context['carrier']['attempt'],
             'reference': owner['reference'], 'reason': 'original Dispatcher cannot resume',
             'stop_receipts': [stopped['receipt']['receipt_ref']] +
                 [slot['record']['receipts'][-1]['receipt_ref'] for slot in self.state()['allocations'].values()],
             'call_receipts': [stopped['provenance']['response_ref']]}
-        prepared = self.invoke('control', {'action': 'prepare-dispatch-recovery', 'evidence': evidence,
-            'receipt': owner})['next_action']['result']['recovery']
+        prepared_result = self.invoke('control', {'action': 'prepare-dispatch-recovery', 'evidence': evidence,
+            'receipt': owner})
+        self.assertIsNotNone(prepared_result['next_action'], prepared_result)
+        prepared = prepared_result['next_action']['result']['recovery']
         decision = {'reference': owner['reference'], 'authority_digest': prepared['authority_digest'],
             'attempt': prepared['attempt'], 'remaining_paths': prepared['remaining_paths'],
             'assume_paths': prepared['ownership']['dispatcher']}
@@ -1452,19 +1527,19 @@ class LayeredReviewTests(fixture.ProgressTests):
             'decision': decision}
         intent = self.invoke('control', {'action': 'dispatch-recovery-intent', 'evidence': identity,
             'receipt': owner})['next_action']['request']
-        receipt = {'adapter': 'fixture-native', 'call_ref': 'layered-replacement-call',
-            'response_ref': 'layered-replacement-response', 'intent_id': intent['intent_id'],
-            'status': 'ready', 'ref': 'native:dispatcher-D2', 'raw': {'write_authority': False}}
+        receipt = {'adapter': 'fixture-native', 'call_ref': 'layered-replacement-call' + suffix,
+            'response_ref': 'layered-replacement-response' + suffix, 'intent_id': intent['intent_id'],
+            'status': 'ready', 'ref': replacement, 'raw': {'write_authority': False}}
         self.invoke('control', {'action': 'dispatch-recovery-result', 'evidence': {
             'recovery_id': prepared['recovery_id'], 'receipt': receipt}, 'receipt': receipt})
         self.assertEqual(self.state()['control']['context']['handoff_progress']['recovery']['state'], 'ready')
         # The original host census still contains the stopped writers; its
         # newly created replacement has not begun its first execution turn.
         inventory = copy.deepcopy(stopped['lifecycle'])
-        inventory['pages'][0]['response']['data'].append({'id': 'native:dispatcher-D2', 'status': {'type': 'idle'}})
+        inventory['pages'][0]['response']['data'].append({'id': replacement, 'status': {'type': 'idle'}})
         self.invoke('lifecycle-state', inventory)
         activated = self.invoke('control', {'action': 'recover-dispatch', 'evidence': {
-            **identity, 'replacement_ref': 'native:dispatcher-D2'}, 'receipt': owner})
+            **identity, 'replacement_ref': replacement}, 'receipt': owner})
         self.assertTrue(activated['next_action']['result']['ok'], activated)
 
     def candidate_ready(self, candidate):

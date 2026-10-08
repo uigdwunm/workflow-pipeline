@@ -73,6 +73,8 @@ G4 后续实际原因：24 closed-docs 原公开全恢复85.61s通过，原actor
 
 ## 验证顺序与交付
 
+G4 原 69 两次真实恢复、11 类拒绝和旧角色无验收权限断言通过；70 原单次、71 最大报告、72 生成一致性及 73 diff 检查通过，冻结增量待原 reviewer 关闭 P2。下一位唯一作者只修 `test_workflow_control.py` 与 `test_workflow_control_git.py` 的已确认 Ticket/coverage 前置：纯 control 数据结构夹具明确只证明 schema，真实 Git 消费者使用原公开临时 C 分配/接受/局部与 Ticket 证明及原 closure delivery 引用；保留原正反目标和监督清理，不改变生产 guard 或支持路线。G4 停稳后交接，审查读取固定 Git 对象与 G1 实现并行。
+
 G4 原 56 公开 prepare/容量拒绝及 57 两条 ledger CAS 真正目标通过，原 51 RED 保留。固定 `1ddbdbe` 早审 Standards 0、localSpec P2 OPEN：原直接替换者判断不支持已有同配置 `D1→D2→D3` 恢复链。只在原 `freeze_implementation_native_owners` 按有界原 `(ref, attempt)` 激活链、原旧 dispatch/ready receipt 和完整未撤销 stop/host 证明到当前真正验收角色；不授予旧角色业务验收权限。原 Layered helper/公开恢复用例补两次恢复及断链/循环/失效证明拒绝。该修复及独立增量复查、最终全量仍待完成。
 
 G4 原 45 完整带修订恢复、48 发布竞态及原恢复对象缺失/坏哈希拒绝、49 最大八份 8MiB 报告通过；53 生成一致性通过，原输出保其命令/源码来源。原 51 两条 ledger CAS 用例仍未到目标：`review_activity` 在容量测量和预留之前物理写入 issuer/source 对象。只将这两个原对象纳入已有模拟测量和普通 intent 字节，通过容量校验及预留后再落盘相同引用；不改变原外部调用、身份、回执或 CAS 合同。此组及最终全量仍未验收。

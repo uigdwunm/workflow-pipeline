@@ -819,29 +819,79 @@ def freeze_implementation_native_owners(state, store, current, prior):
                 accepted_owner(slot['ref'], slot['originating_ref'], slot['originating_ref'],
                     entry.digest(slot['receipts']), True)
     owner = Progress(state['checkpoint_path'], {**current.root['outer'], KEY: state})
-    retired_dispatchers = set()
-    for recovery in [checkpoint.get('recovery'), *checkpoint.get('recovery_history', [])]:
+    retirements = {}
+    recovery_history = checkpoint.get('recovery_history', [])
+    require(isinstance(recovery_history, list) and len(recovery_history) <= 32,
+            'state_capacity', 'original Controller recovery history exceeds its fixed window')
+    for recovery in [*recovery_history, checkpoint.get('recovery')]:
         if recovery is None or recovery['state'] != 'activated':
             continue
         control.validate_recovery(recovery, checkpoint)
         ref = recovery['dispatcher_ref']
-        replacement = recovery['activation']['replacement_ref']
+        activation = recovery['activation']
+        entry.fields(activation, {'recovery_id', 'snapshot_digest', 'decision', 'replacement_ref'})
+        replacement = entry.nonempty(activation['replacement_ref'])
         host = recovery['host_evidence']
-        originals = [record for record in state.get('recovery_dispatch_history', [])
-                     if record['request']['attempt'] == recovery['attempt'] and
-                     record['request']['role'] == 'implementation-dispatcher' and
-                     any(receipt.get('ref') == ref for receipt in record['receipts'])]
-        if (originals and replacement != ref and checkpoint['configuration'] ==
+        require(activation == {'recovery_id': recovery['recovery_id'],
+                'snapshot_digest': recovery['snapshot_digest'], 'decision': recovery['decision'],
+                'replacement_ref': replacement} and recovery['receipts'] and
+                recovery['receipts'][-1]['status'] == 'ready' and
+                recovery['receipts'][-1]['ref'] == replacement and
+                isinstance(recovery['receipts'][-1]['raw'], dict) and
+                recovery['receipts'][-1]['raw'].get('write_authority') is False and
+                replacement not in host['stopped_refs'],
+                'authority_changed', 'original recovery activation or prepared successor changed')
+        originals = []
+        for record in state.get('recovery_dispatch_history', []):
+            if (record['request']['attempt'] != recovery['attempt'] or
+                    record['request']['role'] != 'implementation-dispatcher'):
+                continue
+            original = handoff.unseal(record)
+            bound = any(receipt.get('ref') == ref for receipt in original['receipts'])
+            if not bound and (ref, recovery['attempt']) in retirements.values():
+                # A prepared successor can fail before its first business turn.
+                # Its prior original creation binds this exact sealed launch;
+                # the current recovery still supplies its own causal stop proof.
+                saved = dispatch.dispatch_input(record)
+                launch = dispatch.verified_launch(record)
+                require(launch['role'] == 'implementation-dispatcher' and
+                        launch['attempt'] == recovery['attempt'] and launch['input_digest'] == saved['digest'] and
+                        launch['controller_ref'] == saved['controller_ref'] and
+                        launch['configuration'] == recovery['intent']['configuration'] and
+                        all(saved[key] == state['handoff'][key] for key in
+                            ('controller_ref', 'binding', 'requirement_identity')),
+                        'authority_changed', 'original prepared successor launch authority changed')
+                bound = True
+            if bound:
+                originals.append(original)
+        if (len(originals) == 1 and replacement != ref and checkpoint['configuration'] ==
                 recovery['intent']['configuration'] and
-                replacement == state['control']['context']['carrier']['ref'] == state['accepted']['role_ref'] and
-                state['dispatch']['acceptance'] == state['accepted'] and state['status'] == 'accepted' and
-                state['host']['status'] == 'stopped' and ref not in state.get('native_adverse', {}) and
+                ref not in state.get('native_adverse', {}) and
                 ref in host['stopped_refs'] and host['stop_receipts'] == recovery['stop_receipts'] and
                 host['call_receipts'] == recovery['call_receipts'] and
                 host['stop_receipts'] and host['call_receipts'] and
                 host['original_host'] == state['lifecycle_snapshot']['instance'] and
                 re.fullmatch('[0-9a-f]{64}', host['lifecycle_digest']) and not owner.stop_barrier_pending()):
-            retired_dispatchers.add(ref)
+            identity = (ref, recovery['attempt'])
+            require(identity not in retirements, 'authority_changed', 'duplicate original recovery identity')
+            retirements[identity] = (replacement, control.digest([recovery['recovery_id'], replacement]))
+    retired_dispatchers = set()
+    if retirements:
+        carrier = state['control']['context']['carrier']
+        require(carrier['ref'] == state['accepted']['role_ref'] and
+                state['dispatch']['acceptance'] == state['accepted'] and state['status'] == 'accepted' and
+                state['host']['status'] == 'stopped',
+                'handoff_not_ready', 'recovery chain requires the current accepted stopped dispatcher')
+        endpoint = (carrier['ref'], carrier['attempt'])
+        for identity in retirements:
+            successor, visited = identity, set()
+            while successor in retirements:
+                require(successor[0] not in visited, 'authority_changed', 'original recovery chain is cyclic')
+                visited.add(successor[0])
+                successor = retirements[successor]
+            require(successor[0] not in visited, 'authority_changed', 'original recovery chain is cyclic')
+            require(successor == endpoint, 'handoff_not_ready', 'original recovery chain is disconnected')
+            retired_dispatchers.add(identity[0])
     stopped_closure = None
     integration = state.get('final_integration_recovery')
     if integration is not None:

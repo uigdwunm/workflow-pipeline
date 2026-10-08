@@ -1436,7 +1436,8 @@
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": [],
-      "t06_g1_compat_remaining_scope": "G1 continuation only original call schema7 default/current activation schema assertions and execution_plan_fixture v2 catalog/slices; original legacy5/schema6 refusals retained. Existing verification_fixture coverage remains unknown, no fake pass/permission or broad rewrite."
+      "t06_g1_compat_remaining_scope": "G1 continuation only original call schema7 default/current activation schema assertions and execution_plan_fixture v2 catalog/slices; original legacy5/schema6 refusals retained. Existing verification_fixture coverage remains unknown, no fake pass/permission or broad rewrite.",
+      "t06_g1_coverage_remaining_scope": "Original verification_fixture pure schema-only coverage identities/digest and candidate/closure tests; original local-review/ticket-accept pure transitions establish exact prerequisite before Execution rejection and positive candidate; mark mechanical schema proof only, never claim public C acceptance."
     },
     {
       "path": "tests/runtime/test_plan_revision_progress.py",
@@ -1467,7 +1468,8 @@
       "exists_at_design": true,
       "symbols": [],
       "generated_outputs": [],
-      "t06_g1_remaining_scope": "WorkflowGitTests.plan_evidence still emits schema1/no slices before inline_authority; adapt original valid Git evidence to v2 and preserve original diff/permission refusals."
+      "t06_g1_remaining_scope": "WorkflowGitTests.plan_evidence still emits schema1/no slices before inline_authority; adapt original valid Git evidence to v2 and preserve original diff/permission refusals.",
+      "t06_g1_coverage_remaining_scope": "Original Git candidate-ready positive/negative producers (final integration, mode, reader content/mode/absence, reverted history) and two closure consumers gain original public temporary C source-backed coverage/closure_delivery_view. Preserve target mutations after real accepted baseline, raw/native/source/Git/supervision cleanup/refusals; peers only related regression, unused StageTransfer.finalize untouched."
     },
     {
       "path": "tests/runtime/test_repository_validation.py",
@@ -3355,7 +3357,7 @@
           "t06-g1-compat/summary.json"
         ],
         "known": "ordinary archive intent precheck and explicit raw/metadata accounting; original maximum report stays required",
-        "unknown": "early independent-review-1ddbdbe P2: legal same-configuration D1->D2->D3 recovery chain still rejects D1; source chain repair, incremental review and final full gate pending.",
+        "unknown": "source repair regressions passed; original reviewer immutable recovery-chain increment and final whole-candidate gate pending.",
         "generated": "five existing Store/progress canonical paths unchanged; T06 added to original five Store output ownership rows; existing package digests regenerate only",
         "rule": "sole source/runner writer, no new Ticket/ADR/platform or cap/guard relaxation; exact further source seams documented from real cause",
         "actor_source_evidence": [
@@ -3371,7 +3373,20 @@
         "issuer_source_evidence": "51 original two ledger CAS tests RED296.30s at pre-reserve frozen_files; review_activity physically writes local_check_source and review_issuer before measure_writes. Measure both original objects in existing simulations and materialize same refs only after capacity check/reserve; original RPC/receipt/authority order and fixed limits remain.",
         "frozen_source_ref": "t06-g4/candidate-source.json; HEAD63943ff plus33 exact WIP paths, candidate.patch SHA2560a73831c62eab26ad82531e4b0d03d7d0dbef0fd4047d19d80b66b2f3c8eff75; still one known unresolved producer defect.",
         "issuer_closure_evidence": "55 canonical build,56 real prepare/capacity no-pre-reserve writes,57 two original ledger CAS targets PASS315.40s; original51RED retained, frozen12path delta issuer-preflight-source.json/patch, SHA256fb426f89280a96f4874926d0094f0dd74598d472d5c20f4e7f68fda2c3667f0e.",
-        "native_chain_source_evidence": "independent-review-1ddbdbe.md P2 workflow_progress:836 direct historical replacement equality rejects valid D1->D2->D3. Existing control recovery history <=32 and original dispatch history support this same-configuration route. Verify bounded original(ref,attempt) edges/activated receipts/stop-host proofs to truly accepted current endpoint; disconnected/cyclic/duplicate/revoked facts fail, old roles receive no business grant."
+        "native_chain_source_evidence": "independent-review-1ddbdbe.md P2 workflow_progress:836 direct historical replacement equality rejects valid D1->D2->D3. Existing control recovery history <=32 and original dispatch history support this same-configuration route. Verify bounded original(ref,attempt) edges/activated receipts/stop-host proofs to truly accepted current endpoint; disconnected/cyclic/duplicate/revoked facts fail, old roles receive no business grant.",
+        "native_chain_closure_evidence": "69 real D1->D2->D3 accepted endpoint/11 refusals/old explicit finalize/Stage4 PASS80.04s;70 originalsingle77.81s;71 max8reports8MiB69.46s with fresh independent peak bytes;72canonical/73diffpass. 66 authentic D2 no-business-turn sealed record assertions; old60/61/62/65RED retained. Frozen12path recovery-chain-source.json/patch SHA25636f46740405a645e73879d446ec53ad6fd2ab78f61ccf9fd21eca8ea989fb2a7."
+      },
+      "g1_coverage_confirmed_dependency": {
+        "basis": "2bd9943 plus frozen G4 recovery-chain repair; actual source candidate commit follows",
+        "paths": [
+          "tests/runtime/test_workflow_control.py",
+          "tests/runtime/test_workflow_control_git.py"
+        ],
+        "evidence": [
+          "t06-g1-compat original16pure-control21of23 with missing Ticket/coverage",
+          "t06_g1 readonly63943ff producer-consumer diagnosis: actual Git candidate-ready/closure consumers, not all verify files"
+        ],
+        "scope": "Original pure-control schema-only coverage via original pure transitions; original Git/publicC allocation, acceptance, local/Ticket source-backed coverage and closure predecessor view. Preserve original positive/negative targets; no runtime/guard/routes/schema changes. G4 sole writer stops before G1 starts; module aliases avoid imported TestCase inventory expansion."
       }
     }
   }
