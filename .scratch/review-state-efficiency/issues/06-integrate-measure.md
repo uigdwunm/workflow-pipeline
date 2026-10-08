@@ -59,6 +59,10 @@ G2 留三个入口：27 Layered 原 finalization_owner 缺 exact ref/cause；62/
 
 G1 后续兼容小组：原 `test_workflow_control.py` 的 call/schema、v2 catalog/slices；`test_stage_scope_runner.py` 三个 current11/render 断言；`test_lifecycle_snapshot_retry.py` 通过真实 `_new_state` 与公开 C/owner 初始化构造四项原 journal/锁用例；`test_workflow_progress.py` 的 complete_fixture_local_reviews 从原 handoff 与 Controller 取身份，修 64 真实消费者。精确依赖已登记 manifest；scope_seal_control 保持只读消费验证。快速顺序为 pure preparation、accepted-witness、scope-seal、真实 Git changed-requirement、runner9项、合法 lifecycle 单例后4项、closed-docs 原消费者；未知 coverage 别构造假 pass。实现者复用 `/root/t06_g1`，source/runner 单写者；原 runtime/旧运行拒绝不变。
 
+兼容续组字节固定 `c1601a5`（仅四测试文件 67+/42-），独立 Standards/localSpec 新 findings 0。pure schema/catalog/seal/Git、runner9项与真实 lifecycle4项通过；意外导入 TestCase 扩大发现库存的尝试已正常中断130，模块 alias 修复后原四项通过。公共 actor helper 不改变 runtime guard；closed-docs 已越过原身份门禁但实际 local/Ticket accept progress_failed 原因未知。pure-control 原23项为21 PASS/2FAIL，缺真实 coverage 的两项不冒作通过。原来源见 `t06-g1-compat/summary.json` 和 `independent-review-c1601a5.md`；G2 的早期28项完整字节适用性仍未证明，最后全量必须重新绑定。
+
+G4 开工边界：先连贯修原 archive ordinary intent 预检和 Store 合法 raw/metadata 计账，固定2.25MiB/16MiB/18.25MiB与hash/原调用/CAS，不改物理B。精确源码为 workflow_progress.archive_action 与 workflow_state_store 原计账/三raw读取路径；五包 canonical 映射不新增。小 Store 回归覆盖合法 raw 后普通 predecessor、跨 owner/dependency 普通总预算；原大报告8份8MiB仍必过。精确测试范围为 state_archive 的两小回归、workflow_progress 原容量/恢复、layered_review 原大报告/替换角色、plan_revision_progress 原 ticket-comments subject。Subject serialization 后字段尺寸、scope 真实 Git 差集、native 原角色 accepted/stop 来源、attached adapter/closed-docs 原错误 cause 均先捕一次真实公开探针，未知不先改语义或晋升新源码。临时诊断在冻结前移除，仅保有限事实引用；本组作者 `/root/t06_g4` 独占 writer/runner。
+
 ## 验证顺序与交付
 
 1. 每组先选择通过项目 runner 的最小反馈命令，证明合法输入和目标失败确实可达；准备失败先修合法基线，避免反复跑长模块寻找同一输入错误。

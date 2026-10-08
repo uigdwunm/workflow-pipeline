@@ -220,7 +220,8 @@
       ],
       "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。 T06 attempt17（35.26s）证明第二次prepare替换最新txn后，原已activated authority被readiness消费者误拒。仅核现有有界原activated transaction/control receipt与当前原Control authority一致性，保留predecessor/contract/baseline、缺失/篡改/foreign/未激活拒绝；不新增机制、格式或限额。 T06 attempt23（35.87s）合法第二次activated后原B scope projection缺fullowner证明；保持既有shape/预算及pending事务事实，从原已提交root/control证明产生有限execution_authority事实并核原checkpoint投影，缺proof/自报JSON不授ready，新pending不授B新派发。不导出history、不新flag/服务/hydrate。",
       "remaining_scope": "Preserve reviewed core; exclude deferred B. T06 only repairs consumed_scope_readiness for original accepted activation during later pending revision, using bounded original transaction/Control proof. No GC/quota/reserve/log-spool/physical ledger accounting or extreme-scale work.",
-      "t06_g2_remaining_scope": "G2 only Progress.save/prepare_review_archive current lookup for original valid unconverted runner11 outer; let existing save_current_record validate initial CAS; do not relax Store legacy guard. Existing five canonical outputs regenerated."
+      "t06_g2_remaining_scope": "G2 only Progress.save/prepare_review_archive current lookup for original valid unconverted runner11 outer; let existing save_current_record validate initial CAS; do not relax Store legacy guard. Existing five canonical outputs regenerated.",
+      "t06_g4_remaining_scope": "G4 archive_action production ordinary intent measurement/precheck before reserve and no-effect capacity rejection only before external dispatch. Other subject/scope/native-owner/attached/closed-docs production fixes remain unknown until exact public probes; temporary bounded diagnostics must be removed, no guard/cap expansion."
     },
     {
       "path": "src/shared/scripts/workflow_control.py",
@@ -644,7 +645,8 @@
       "tickets": [
         "T01",
         "T03",
-        "T05"
+        "T05",
+        "T06"
       ],
       "kind": "source",
       "reason": "原owner下的有界文件存储、原子提交与归档",
@@ -699,7 +701,8 @@
         "skills/solution-design/scripts/workflow_state_store.py"
       ],
       "implementation_note": "T01 精确前驱构造/读取，不 pin 整个旧 stage 或递归祖先；通用 compact 属 T05-A；旧 GC 计划随本次收缩延期。 T03已确认跨checkpoint/ledger的Store读取需在原operation_store/open_store/_read入口汇总；仅计量，保持既有当前容量、权威和 CAS；新增物理预留延期。原模块由T01创建，T03在当前基线上modify，不重建。",
-      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery."
+      "remaining_scope": "Preserve accepted core source; isolate deferred uncommitted T05-B before build/review. No GC, whole-run quota/reserve/log-spool/physical ledger-accounting or extreme-scale additions in this delivery.",
+      "t06_g4_remaining_scope": "G4 existing _read/write_raw_evidence.flush/read_raw_chunk/read_raw_evidence operation budget classification: explicit legal raw vs metadata, metadata manifests, aggregate actual physical counters and original 2.25MiB/16MiB/18.25MiB limits/hash/source/CAS retained. No GC/physical-quota/reserve redesign."
     },
     {
       "path": "src/shared/scripts/review_evidence.py",
@@ -1307,7 +1310,8 @@
       "generated_outputs": [],
       "implementation_note": "T02 execution-plan-v2 的真实 Stage2 冻结与后续分层审查夹具依赖 planning_spec；保留 Stage2 两轴原权限，不将执行 accepted 当作局部审查。 T06确认：Layered/T04父夹具allocation_slot在本文件53–60，仅read_subject导致真实归档后subject_missing（原t05-a-affected-layered-certificate/t04-claims日志）；允许该原helper用store精确归档引用读取，保留未知/损坏/跨run拒绝。其他helper仅实际已授权fixture依赖可适配，不扩展生产行为。 原observation停止census亦由该父夹具产生，原t05-a-affected-original-wrappers-attempt1日志已证遗漏archive roles；仅在原已停止证明有效时补原角色，不伪造stop/unknown状态。 T06新运行mark/accept路径经原公有C/B/Git allocation与local/Ticket claim接线；只在测试temporary repo按原基线/原已接受fingerprints恢复尚无owner的owned bytes、保留HEAD/index/candidate，再在真实write grant下写回候选原bytes/modes并accept delta。保护planning/unrelated/unknown/既有accepted bytes。unused finalize_candidate与pure-control fixture_accepted_execution继续不改；不append权限或弱化生产拒绝。",
       "remaining_scope": "T06 exact original fixture helper compatibility only; no new mechanisms or weakening assertions",
-      "t06_g1_compat_remaining_scope": "G1 continuation only complete_fixture_local_reviews originating actor from original handoff.expected_entry.actor.thread_id (production guard8504) and original context.controller_ref receipt instead of literal task, with exact unchanged public review inputs. Source t06-g2/64 closed-docs failure; no runtime identity guard change."
+      "t06_g1_compat_remaining_scope": "G1 continuation only complete_fixture_local_reviews originating actor from original handoff.expected_entry.actor.thread_id (production guard8504) and original context.controller_ref receipt instead of literal task, with exact unchanged public review inputs. Source t06-g2/64 closed-docs failure; no runtime identity guard change.",
+      "t06_g4_remaining_scope": "G4 existing archive capacity test/no dispatch/no reserve/no checkpoint/usage change; original final integration recovery scope and closed-docs consumers may contain temporary exact-boundary probes only until real cause/symbols established, remove before freeze. Do not relax original scope/permission/role checks."
     },
     {
       "path": "tests/runtime/test_workflow.py",
@@ -1445,7 +1449,8 @@
       "generated_outputs": [],
       "implementation_note": "T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal.",
       "t06_g1_remaining_scope": "new_active_flow shared by unbound dispatch fixture needs explicit shared helper invocation; inline_revision_b_delivery new helper must be included in existing slice; do not alter revision business/refusal assertions.",
-      "t06_g2_remaining_scope": "G3 only inline_revision_b_delivery current real local/Ticket acceptance and early checks before candidate-ready; G1 version/input identity assertions remain. Do not construct fake acceptance or weaken review guards. Original same-test activated-to-prepared tamper now targets exact pinned original predecessor object, rejects hash corruption without checkpoint write, restores in finally; integrity claim only, no invented semantic CAS pass."
+      "t06_g2_remaining_scope": "G3 only inline_revision_b_delivery current real local/Ticket acceptance and early checks before candidate-ready; G1 version/input identity assertions remain. Do not construct fake acceptance or weaken review guards. Original same-test activated-to-prepared tamper now targets exact pinned original predecessor object, rejects hash corruption without checkpoint write, restores in finally; integrity claim only, no invented semantic CAS pass.",
+      "t06_g4_remaining_scope": "G4 original ticket-comments full integration recovery: temporary probe actual compacted subject wrapper/top/nested sizes at production serialization guard; no guard/cap change or invented semantic authority."
     },
     {
       "path": "tests/runtime/test_workflow_control_git.py",
@@ -1506,7 +1511,8 @@
       "symbols": [],
       "generated_outputs": [],
       "implementation_note": "T03 issue V01/V03 既定真实行为：公共 fixture 的提前 Ticket/affected 检查、修复后旧完整 pass 失效；原 native ref 的新 invocation/lease、64KiB 摘要/有界展开、原 Slice ID 与首次提交记录。仅这些相关回归，不预晋升其余 verify 文件。 T06 confirmed by original T05-A affected logs: adapt new-run current/archive allocation lookup, stopped-role census and valid current C adversarial input; stage-scope v1 planning producer needs the committed v2 fixture. Preserve original business/rejection assertions and legacy-run refusal.",
-      "t06_g2_remaining_scope": "G3 recover_layered_dispatcher includes actual ready replacement from original lifecycle authority before building stop census; do not mark unknown actors stopped or reduce raw-padding/budgets."
+      "t06_g2_remaining_scope": "G3 recover_layered_dispatcher includes actual ready replacement from original lifecycle authority before building stop census; do not mark unknown actors stopped or reduce raw-padding/budgets.",
+      "t06_g4_remaining_scope": "G4 original maximum 8MiB local/Ticket/delivery semantic IO test adapts independent measured_read kwargs/classification without cap/padding weakening; recovered dispatcher test temporary probe exact original ref/accepted+stop authority at finalization. Actual production recovery edits require causal evidence."
     },
     {
       "path": "tests/runtime/test_state_archive.py",
@@ -1526,7 +1532,8 @@
       ],
       "generated_outputs": [],
       "remaining_scope": "Preserve accepted core tests; isolate deferred B. T06 only removes the duplicate CLI subprocess context rewrite so the repaired original Layered method exercises its stale/issuer/source/certificate and no-write assertions. No GC/physical/10000 additions.",
-      "implementation_note": "T06 actual affected attempt13 fails: duplicate subprocess wrapper rewrites intentionally stale C to current, bypassing the original stale-context assertion. Directly reuse repaired original Layered test, retain all original refusal assertions; no new wrapper."
+      "implementation_note": "T06 actual affected attempt13 fails: duplicate subprocess wrapper rewrites intentionally stale C to current, bypassing the original stale-context assertion. Directly reuse repaired original Layered test, retain all original refusal assertions; no new wrapper.",
+      "t06_g4_remaining_scope": "G4 two seconds-scale original public Store regressions: legal raw expansion then normal predecessor/read budget; aggregate normal dependency Store read cap. Real commit/reference/raw interfaces and corruption/source guards, no phase-chain volume benchmark."
     },
     {
       "path": "tests/runtime/test_accepted_query_retry.py",
@@ -3312,6 +3319,28 @@
           "t06-g2/64-closure-docs original Originating Task guard; exact filename in command-index.md"
         ],
         "scope": "current original test producers/consumers only; no runtime change, scope-seal consumer stays verify, original legacy/unknown/permission/journal guards retained"
+      },
+      "g4_confirmed_dependency": {
+        "basis_candidate": "c1601a529910752b13a53acb5d2061111f4e6bb8",
+        "paths": [
+          "src/shared/scripts/workflow_progress.py",
+          "src/shared/scripts/workflow_state_store.py",
+          "tests/runtime/test_state_archive.py",
+          "tests/runtime/test_workflow_progress.py",
+          "tests/runtime/test_layered_review.py",
+          "tests/runtime/test_plan_revision_progress.py"
+        ],
+        "evidence": [
+          "t06-g4/01-capacity-red.receipt.json",
+          "t06-g4/scoped-diagnosis.md",
+          "t06-g2/27-layered-replacement.log",
+          "t06-g2/command-index.md",
+          "t06-g1-compat/summary.json"
+        ],
+        "known": "ordinary archive intent precheck and explicit raw/metadata accounting; original maximum report stays required",
+        "unknown": "actual serialized subject culprit, actual integration diff, native finalization ref, attached adapter cause and closed-docs accept cause; one exact public probe each before changes",
+        "generated": "existing five Store/progress canonical mappings and existing package digests only; generated_outputs inventory unchanged",
+        "rule": "sole source/runner writer, no new Ticket/ADR/platform or cap/guard relaxation; exact further source seams documented from real cause"
       }
     }
   }
