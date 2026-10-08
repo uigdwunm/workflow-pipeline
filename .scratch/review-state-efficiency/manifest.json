@@ -221,7 +221,7 @@
       "implementation_note": "T01 同 C 最小阶段前驱/有限读取必需入口；已批准文件内适配，不扩展业务范围。 T06 attempt17（35.26s）证明第二次prepare替换最新txn后，原已activated authority被readiness消费者误拒。仅核现有有界原activated transaction/control receipt与当前原Control authority一致性，保留predecessor/contract/baseline、缺失/篡改/foreign/未激活拒绝；不新增机制、格式或限额。 T06 attempt23（35.87s）合法第二次activated后原B scope projection缺fullowner证明；保持既有shape/预算及pending事务事实，从原已提交root/control证明产生有限execution_authority事实并核原checkpoint投影，缺proof/自报JSON不授ready，新pending不授B新派发。不导出history、不新flag/服务/hydrate。",
       "remaining_scope": "Preserve reviewed core; exclude deferred B. T06 only repairs consumed_scope_readiness for original accepted activation during later pending revision, using bounded original transaction/Control proof. No GC/quota/reserve/log-spool/physical ledger accounting or extreme-scale work.",
       "t06_g2_remaining_scope": "G2 only Progress.save/prepare_review_archive current lookup for original valid unconverted runner11 outer; let existing save_current_record validate initial CAS; do not relax Store legacy guard. Existing five canonical outputs regenerated.",
-      "t06_g4_remaining_scope": "G4 archive_action production ordinary intent measurement/precheck before reserve and no-effect capacity rejection only before external dispatch. Other subject/scope/native-owner/attached/closed-docs production fixes remain unknown until exact public probes; temporary bounded diagnostics must be removed, no guard/cap expansion. Confirmed actor producer repair only review_activity observe/preflight and commit_review_start/read_review_start_result: namespace original verified originating actor, generic Controller receipts unchanged. Confirmed integration review diff baseline expected_target_head then verified integration_target_head then original baseline, no added exclusions. Confirmed native registry/owner subset consumer: freeze_implementation_native_owners omits accepted-owner only for exact replaced original dispatcher with valid activated recovery stop proof and truly accepted current replacement, retains original native_refs and denies old finalize; all other missing owners still fail. Confirmed subject duplication: stage_subject_value/read_active_owner reuse existing accepted body-ref only for identical dispatch.acceptance, restore and verify original sealed dispatch digest/ref/hash/owner. Confirmed 32/37 original implementation recovery: read-only git projection is not a mutable planning record; original Stage3 has no automatic archive locator. implementation_delivery retains only genuine necessary planning records/sources and carried/revalidation facts in existing CAS-bound recovery_ref; implementation_recovery restores those exact facts, validates original context/authority and retains original read limits. Remove disproved archive lookup; no history scan, invented revision_ref, full old stage/C or new object type."
+      "t06_g4_remaining_scope": "G4 archive_action production ordinary intent measurement/precheck before reserve and no-effect capacity rejection only before external dispatch. Other subject/scope/native-owner/attached/closed-docs production fixes remain unknown until exact public probes; temporary bounded diagnostics must be removed, no guard/cap expansion. Confirmed actor producer repair only review_activity observe/preflight and commit_review_start/read_review_start_result: namespace original verified originating actor, generic Controller receipts unchanged. Confirmed integration review diff baseline expected_target_head then verified integration_target_head then original baseline, no added exclusions. Confirmed native registry/owner subset consumer: freeze_implementation_native_owners omits accepted-owner only for exact replaced original dispatcher with valid activated recovery stop proof and truly accepted current replacement, retains original native_refs and denies old finalize; all other missing owners still fail. Confirmed subject duplication: stage_subject_value/read_active_owner reuse existing accepted body-ref only for identical dispatch.acceptance, restore and verify original sealed dispatch digest/ref/hash/owner. Confirmed 32/37 original implementation recovery: read-only git projection is not a mutable planning record; original Stage3 has no automatic archive locator. implementation_delivery retains only genuine necessary planning records/sources and carried/revalidation facts in existing CAS-bound recovery_ref; implementation_recovery restores those exact facts, validates original context/authority and retains original read limits. Remove disproved archive lookup; no history scan, invented revision_ref, full old stage/C or new object type. Confirmed51 review_activity original local_check_source/review_issuer writes must be in existing measure_writes preflight and ordinary intent count, then materialize identical refs after capacity check/reserve; no early physical object/index write, no change to identity/RPC/CAS/receipt/guard/cap contracts."
     },
     {
       "path": "src/shared/scripts/workflow_control.py",
@@ -3198,7 +3198,7 @@
   "plan_revision": {
     "approved_date": "2026-10-07",
     "basis_commit": "35d5a57876badce5a4beb01c99ac2a5db62c404e",
-    "scope": "user requested reduction; revised T05 core closure and T06 necessary integration only; implementation paused",
+    "scope": "user requested reduction; reduced T05 closure and T06 necessary integration only; active after human resume",
     "policy_ref": "execution-policy.md",
     "preserved_acceptance": {
       "T01": "2db280986df071464e3c37346c076f24d233c952",
@@ -3270,7 +3270,7 @@
     },
     "execution_revision": {
       "approved_date": "2026-10-08",
-      "authorization": "human confirmed proposed three planning files plus unique dispatcher update only; implementation remains paused",
+      "authorization": "human resume authorized reduced ordinary local implementation and validation; exact confirmed dependencies only, no deployment or deferred mechanism",
       "basis_candidate": "d2c15eb56bef923e0f15afa01171430dd5e06177",
       "repair_index_ref": "issues/06-integrate-measure.md#剩余工作的分组与入口2026-10-08",
       "groups": [
@@ -3355,7 +3355,7 @@
           "t06-g1-compat/summary.json"
         ],
         "known": "ordinary archive intent precheck and explicit raw/metadata accounting; original maximum report stays required",
-        "unknown": "34 final integration replacement owner missing exact native ref; subject recovery remains incomplete pending genuine producer-backed planning records and final original public regression.",
+        "unknown": "51 ledger review CAS target remains unexecuted: original review issuer/source write before measurement and reserve; final fixed-candidate full gate and independent review pending.",
         "generated": "five existing Store/progress canonical paths unchanged; T06 added to original five Store output ownership rows; existing package digests regenerate only",
         "rule": "sole source/runner writer, no new Ticket/ADR/platform or cap/guard relaxation; exact further source seams documented from real cause",
         "actor_source_evidence": [
@@ -3367,7 +3367,9 @@
         "ledger_source_evidence": "28 exact ProtocolError Ticket check snapshot scope differs; actual activated ledger/actor/control pointer preserved, action skipped _git snapshot because GIT_BACKED_ACTIONS omitted original four review actions",
         "native_source_evidence": "35 formal recovered D2 public path PASS79.47s including native-owner subset, old D1 rejection and four corrupt proof refusals; source hashes remain in original receipt.",
         "subject_source_evidence": "27 actual post-compaction subject274367B: same accepted body repeated in dispatch.acceptance48768B versus accepted ref222B; reuse original immutable body and digest, cap stays262144",
-        "recovery_source_evidence": "32 original post-recovery missing full controller/evidence/revision_ref;37 subject_missing disproves automatic Stage3 archival. Producer implementation_delivery recovery_ref and consumer Progress.implementation_recovery restore original bounded mutable planning facts only."
+        "recovery_source_evidence": "32 original post-recovery missing full controller/evidence/revision_ref;37 subject_missing disproves automatic Stage3 archival. Producer implementation_delivery recovery_ref and consumer Progress.implementation_recovery restore original bounded mutable planning facts only.",
+        "issuer_source_evidence": "51 original two ledger CAS tests RED296.30s at pre-reserve frozen_files; review_activity physically writes local_check_source and review_issuer before measure_writes. Measure both original objects in existing simulations and materialize same refs only after capacity check/reserve; original RPC/receipt/authority order and fixed limits remain.",
+        "frozen_source_ref": "t06-g4/candidate-source.json; HEAD63943ff plus33 exact WIP paths, candidate.patch SHA2560a73831c62eab26ad82531e4b0d03d7d0dbef0fd4047d19d80b66b2f3c8eff75; still one known unresolved producer defect."
       }
     }
   }

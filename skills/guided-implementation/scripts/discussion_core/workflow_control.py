@@ -45,6 +45,7 @@ GIT_BACKED_ACTIONS = {
     'plan-execution', 'assign', 'execution-result', 'accept-execution',
     'plan-revision-activate', 'prepare-dispatch-recovery', 'recover-dispatch',
     'escalate-implementation', 'capture-integration', 'candidate-ready',
+    'ticket-check', 'local-review', 'ticket-accept', 'review-applicability',
     'review-start', 'review-converged', 'validation-start', 'validation-result',
     'validation-retry', 'invalidate-candidate', 'delivery-ready',
     'accept-delivery', 'closure-result',

@@ -29,6 +29,48 @@ class StateArchiveTests(unittest.TestCase):
                                        'pending': None, 'allocations': {}}},
             metadata={'stage_subject': 'stage:3:0', 'next_action': 'next-ticket'}, outer={})
 
+    def test_raw_expansion_preserves_normal_read_budget(self):
+        raw = {'output': 'r' * (3 * 1024 * 1024)}
+        reference, manifest = self.store.write_raw_evidence(self.current.run_id, raw,
+            measurement=storage.raw_measure(raw), commit_bytes=1024,
+            native_receipt={'action_id': 'original-native-result'})
+        predecessor = self.store.write_predecessor(self.current, {
+            'kind': 'accepted-design-v1', 'checkpoint_path': str(self.path.resolve()),
+            'accepted': 'original'})
+        with storage.operation_store(self.path) as reopened:
+            current = reopened.open_current()
+            self.assertEqual(reopened.read_raw_evidence(reference, run_id=current.run_id), raw)
+            self.assertEqual(reopened.read_predecessor(current, predecessor)['accepted'], 'original')
+            self.assertGreater(reopened.read_totals['bytes'], 3 * 1024 * 1024)
+            self.assertLessEqual(reopened.read_totals['bytes'], storage.READ_LIMIT + storage.EVIDENCE_LIMIT)
+        with self.assertRaises(entry.PreparationError):
+            storage.StateStore(self.path).read_raw_evidence(
+                {**reference, 'run_id': 'different-run'}, run_id=self.current.run_id)
+        chunk = manifest['chunks'][0]
+        self.store._path(chunk['sha256']).write_bytes(b'corrupt')
+        with self.assertRaises(entry.PreparationError) as damaged:
+            storage.StateStore(self.path).read_raw_evidence(reference, run_id=self.current.run_id)
+        self.assertEqual(damaged.exception.code, 'state_object_corrupt')
+
+    def test_dependency_stores_cannot_share_evidence_allowance_for_normal_reads(self):
+        dependency = storage.StateStore(self.path.with_name('dependency.json'))
+        owner_refs = [self.store.write_object(self.current.run_id, 'evidence', {
+            'number': number, 'metadata': 'm' * (128 * 1024)}) for number in range(10)]
+        dependency_refs = [dependency.write_object('dependency-run', 'evidence', {
+            'number': number, 'metadata': 'd' * (128 * 1024)}) for number in range(10)]
+        before = self.path.read_bytes()
+        with storage.measure_reads():
+            owner = storage.StateStore(self.path)
+            reader = storage.StateStore(dependency.checkpoint)
+            for number, reference in enumerate(owner_refs):
+                self.assertEqual(owner.read_evidence(reference,
+                    run_id=self.current.run_id)['value']['number'], number)
+            with self.assertRaises(entry.PreparationError) as exceeded:
+                for reference in dependency_refs:
+                    reader.read_evidence(reference, run_id='dependency-run')
+            self.assertEqual(exceeded.exception.code, 'state_capacity')
+        self.assertEqual(self.path.read_bytes(), before)
+
     def test_archive_retains_exact_committed_receipt_and_current_route(self):
         request, result = {'operation': 'accept', 'invocation': 'original'}, {'accepted': 'original'}
         key = self.store.receipt_key(self.current, actor='owner', kind='accept',

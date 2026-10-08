@@ -380,7 +380,7 @@ class StateStore:
             current = current.parent
         return path
 
-    def _read(self, path, maximum):
+    def _read(self, path, maximum, *, raw_reference=None):
         require(not path.is_symlink(), 'state path cannot be a symlink')
         try:
             with path.open('rb') as stream:
@@ -395,16 +395,30 @@ class StateStore:
             audit['files'] += 1
             audit['bytes'] += len(data)
             return data
-        self._ordinary_bytes_read += len(data)
         totals = _operation_read_totals.get()
         if totals is None:
             totals = self._read_totals
         totals['files'] += 1
         totals['bytes'] += len(data)
+        if raw_reference is None:
+            self._ordinary_bytes_read += len(data)
+            totals['ordinary_bytes'] = totals.get('ordinary_bytes', 0) + len(data)
+        else:
+            require(isinstance(raw_reference, tuple) and len(raw_reference) == 2 and
+                    isinstance(raw_reference[0], str) and raw_reference[0] and
+                    isinstance(raw_reference[1], str) and len(raw_reference[1]) == 64 and
+                    all(char in '0123456789abcdef' for char in raw_reference[1]),
+                    'raw read requires its original run and evidence digest')
+            require(totals.get('raw_reference', raw_reference) == raw_reference,
+                    'operation may expand only one original raw result', 'state_capacity')
+            totals['raw_reference'] = raw_reference
+            totals['raw_bytes'] = totals.get('raw_bytes', 0) + len(data)
         require(totals['bytes'] <= READ_LIMIT + EVIDENCE_LIMIT,
                 'combined operation exceeded its read budget', 'state_capacity')
-        require(self._ordinary_bytes_read <= READ_LIMIT + EVIDENCE_LIMIT,
-                'operation exceeded its read budget', 'state_capacity')
+        require(totals.get('ordinary_bytes', 0) <= READ_LIMIT,
+                'ordinary operation exceeded its read budget', 'state_capacity')
+        require(totals.get('raw_bytes', 0) <= EVIDENCE_LIMIT,
+                'original raw result exceeded its read budget', 'state_capacity')
         return data
 
     @property
@@ -458,7 +472,8 @@ class StateStore:
             path = self._path(chunk_digest)
             if path.exists():
                 if chunk_digest not in self._verified_raw_chunks:
-                    require(path.stat().st_size == len(data) and self._read(path, 1024 * 1024) == data,
+                    require(path.stat().st_size == len(data) and self._read(path, 1024 * 1024,
+                            raw_reference=(run_id, expected_digest)) == data,
                             'immutable raw chunk changed', 'state_object_corrupt')
             else:
                 usage_path = self._safe('usage.json')
@@ -580,7 +595,8 @@ class StateStore:
         require(set(chunk) == {'run_id', 'kind', 'sha256', 'size'} and chunk['run_id'] == run_id and
                 chunk['kind'] == 'raw-chunk' and type(chunk['size']) is int and
                 0 < chunk['size'] <= 1024 * 1024, 'invalid raw chunk reference')
-        part = self._read(self._path(chunk['sha256']), 1024 * 1024)
+        part = self._read(self._path(chunk['sha256']), 1024 * 1024,
+                          raw_reference=(run_id, manifest['sha256']))
         require(len(part) == chunk['size'] and hashlib.sha256(part).hexdigest() == chunk['sha256'],
                 'raw chunk changed', 'state_object_corrupt')
         return part
@@ -596,7 +612,8 @@ class StateStore:
             require(set(chunk) == {'run_id', 'kind', 'sha256', 'size'} and chunk['run_id'] == run_id and
                     chunk['kind'] == 'raw-chunk' and type(chunk['size']) is int and
                     0 < chunk['size'] <= 1024 * 1024, 'invalid raw chunk reference')
-            part = self._read(self._path(chunk['sha256']), 1024 * 1024)
+            part = self._read(self._path(chunk['sha256']), 1024 * 1024,
+                              raw_reference=(run_id, manifest['sha256']))
             require(len(part) == chunk['size'] and hashlib.sha256(part).hexdigest() == chunk['sha256'],
                     'raw chunk changed', 'state_object_corrupt')
             require(len(data) + len(part) <= manifest['size'], 'raw evidence length changed')

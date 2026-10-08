@@ -337,6 +337,9 @@ class ProgressTests(transfer.StageTransferTests):
         ordinary_limit = progress.state_store.RUN_LIMIT - progress.state_store.BUSINESS_RESERVE - progress.state_store.RECOVERY_RESERVE
         progress.state_store.atomic_write(store.directory / 'usage.json', progress.state_store.encode({'allocated': ordinary_limit}))
         before = self.checkpoint.read_bytes()
+        usage_before = (store.directory / 'usage.json').read_bytes()
+        reserves_before = {str(path.relative_to(store.directory)): path.stat().st_size
+            for path in (store.directory / 'reserves').rglob('*') if path.is_file()}
         original = progress.dispatch.checkpoint
         calls = []
         def observed(*args, **kwargs):
@@ -349,6 +352,9 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(result['next_action']['result']['error']['code'], 'state_capacity', result)
         self.assertEqual(self.checkpoint.read_bytes(), before)
         self.assertEqual(self.state()['control']['context']['retired_handoffs'][handoff_id]['operations'], [])
+        self.assertEqual((store.directory / 'usage.json').read_bytes(), usage_before)
+        self.assertEqual({str(path.relative_to(store.directory)): path.stat().st_size
+            for path in (store.directory / 'reserves').rglob('*') if path.is_file()}, reserves_before)
 
     def test_archive_reservation_terminal_receipt_faults_release_only_after_commit_proof(self):
         checkpoint = self.checkpoint
@@ -2657,16 +2663,130 @@ class ProgressTests(transfer.StageTransferTests):
         self.assertEqual(self.invoke("resume")["next_action"], result["next_action"])
 
     def test_final_recovery_preserves_acceptance_and_revalidates_replacement(self):
-        self.final_recovery_chain()
+        original_invoke = self.invoke
+        checked = [False]
+        def reject_unowned_review(operation, data=None, revision=None):
+            if (not checked[0] and operation == 'review-activity' and data.get('operation') == 'prepare' and
+                    self.state().get('final_integration_recovery') is not None):
+                checked[0] = True
+                candidate, before = data['candidate'], self.checkpoint.read_bytes()
+                for relative in ('unowned-review.py', 'docs/requirements/a.md'):
+                    try:
+                        (self.flow / relative).write_bytes(b'outside original review authority\n')
+                        self.flow_git('add', relative)
+                        self.flow_git('commit', '-qm', 'unauthorized review input fixture')
+                        bad = copy.deepcopy(data)
+                        bad['candidate'] = self.flow_git('rev-parse', 'HEAD')
+                        for check in bad['verification']['checks']:
+                            check.update(start_commit=bad['candidate'], end_commit=bad['candidate'])
+                        raw = bad['verification']['source']['raw']
+                        raw.update(candidate=bad['candidate'], checks=copy.deepcopy(bad['verification']['checks']))
+                        raw['fixture']['candidate'] = bad['candidate']
+                        with self.assertRaises(progress.entry.PreparationError) as denied:
+                            original_invoke(operation, bad, revision)
+                        if relative == 'unowned-review.py':
+                            self.assertEqual(denied.exception.code, 'scope_changed')
+                        else:
+                            self.assertIn(denied.exception.code, {'scope_changed', 'source_changed'})
+                        self.assertEqual(self.checkpoint.read_bytes(), before)
+                    finally:
+                        self.flow_git('reset', '--hard', candidate)
+            return original_invoke(operation, data, revision)
+        original_freeze = progress.freeze_implementation_native_owners
+        inspected = [False]
+        def verify_closure_subset(state, store, current, prior):
+            if state.get('final_integration_recovery') is not None and not inspected[0]:
+                inspected[0] = True
+                closure = state['final_integration_recovery']['closure_handoff']
+                for label in ('foreign-run', 'wrong-ref', 'revoked-stop'):
+                    rejected = copy.deepcopy(state)
+                    changed = copy.deepcopy(closure)
+                    if label == 'foreign-run':
+                        changed['stop_ref']['run_id'] = 'different-run'
+                    elif label == 'wrong-ref':
+                        changed['role_ref'] = 'unregistered-closure'
+                    else:
+                        rejected.setdefault('native_adverse', {})[changed['role_ref']] = {'status': 'running'}
+                    if label != 'revoked-stop':
+                        changed = progress.handoff.seal({key: value for key, value in changed.items() if key != 'digest'})
+                        rejected['final_integration_recovery']['closure_handoff'] = changed
+                        rejected['handoff']['authorization']['integration_recovery']['closure'] = copy.deepcopy(changed)
+                    with self.subTest(label=label), store.measure_writes(sequence=True):
+                        with self.assertRaises((progress.entry.PreparationError, progress.control.ControlError)):
+                            original_freeze(rejected, store, current, prior)
+                owner = progress.Progress(self.checkpoint, {**current.root['outer'], progress.KEY: state})
+                with self.assertRaises(progress.entry.PreparationError) as no_grant:
+                    owner.finalization_owner(closure['role_ref'])
+                self.assertEqual(no_grant.exception.code, 'result_incomplete')
+            result = original_freeze(state, store, current, prior)
+            if state.get('final_integration_recovery') is not None:
+                self.assertNotIn(state['final_integration_recovery']['closure_handoff']['role_ref'], result)
+            return result
+        with patch.object(self, 'invoke', reject_unowned_review), \
+                patch.object(progress, 'freeze_implementation_native_owners', verify_closure_subset):
+            self.final_recovery_chain()
+        self.assertTrue(checked[0])
 
     def test_final_recovery_preserves_committed_closure_documents(self):
-        self.final_recovery_chain(retain_docs=True)
+        original_invoke = self.invoke
+        checked = [False]
+        def verify_original_actor(operation, data=None, revision=None):
+            if (not checked[0] and operation == 'review-activity' and data.get('operation') == 'prepare' and
+                    data['actor_ref'] != self.state()['control']['context']['controller_ref']):
+                checked[0] = True
+                before = self.checkpoint.read_bytes()
+                for actor in (self.state()['control']['context']['controller_ref'], 'forged-originating-task'):
+                    with self.assertRaises(progress.entry.PreparationError) as denied:
+                        original_invoke(operation, {**data, 'actor_ref': actor}, revision)
+                    self.assertEqual(denied.exception.code, 'identity_mismatch')
+                    self.assertEqual(self.checkpoint.read_bytes(), before)
+                prepared = original_invoke(operation, data, revision)
+                replay = original_invoke(operation, data)
+                self.assertTrue(replay['acknowledged'])
+                self.assertEqual(replay['next_action']['operation'], 'lookup-exact-review')
+                self.assertEqual(replay['next_action']['action_id'], prepared['next_action']['action_id'])
+                return prepared
+            return original_invoke(operation, data, revision)
+        with patch.object(self, 'invoke', verify_original_actor):
+            self.final_recovery_chain(retain_docs=True)
+        self.assertTrue(checked[0])
 
     def test_final_recovery_rejects_reused_historical_host_response(self):
         self.final_recovery_chain(replay_host=True)
 
     def test_final_recovery_after_target_advances_during_publication(self):
-        self.final_recovery_chain(publication_race=True)
+        original_invoke = self.invoke
+        checked = [False]
+        def verify_original_recovery_source(operation, data=None, revision=None):
+            if operation == 'implementation-recovery' and data.get('reference') == 'controller:final-recovery' and not checked[0]:
+                checked[0] = True
+                facts, current, store = progress.read_implementation_delivery(
+                    self.checkpoint, self.state()['handoff']['predecessor'])
+                reference = facts['recovery_ref']
+                recovered = store.read_evidence(reference, run_id=current.run_id)['value']
+                self.assertEqual(recovered['plan_revisions'], [])
+                path = store._path(reference['sha256'])
+                original, before = path.read_bytes(), self.checkpoint.read_bytes()
+                for absent in (False, True):
+                    try:
+                        if absent:
+                            path.unlink()
+                        else:
+                            path.write_bytes(b'corrupt original recovery record')
+                        with progress.state_store.operation_store(self.checkpoint) as measured:
+                            owner = progress.Progress(self.checkpoint, progress.read_active_owner(self.checkpoint))
+                            with measured.measure_writes(sequence=True):
+                                with self.assertRaises(progress.entry.PreparationError) as rejected:
+                                    owner.implementation_recovery(data)
+                        self.assertEqual(rejected.exception.code,
+                                         'state_object_missing' if absent else 'state_object_corrupt')
+                        self.assertEqual(self.checkpoint.read_bytes(), before)
+                    finally:
+                        path.write_bytes(original)
+            return original_invoke(operation, data, revision)
+        with patch.object(self, 'invoke', verify_original_recovery_source):
+            self.final_recovery_chain(publication_race=True)
+        self.assertTrue(checked[0])
 
     def execution_transfer_request(self):
         parent = self.state()['handoff']

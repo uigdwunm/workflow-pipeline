@@ -1099,18 +1099,21 @@ def verify_review_native_anchor(store, current, claim, authority, stop, *, slot=
     prepared = store.read_evidence(authority['prepare_request_ref'], run_id=current.run_id)['value']
     require(isinstance(prepared, dict) and prepared.get('operation') == 'prepare' and prepared.get('axis') == axis and
             prepared.get('candidate') == claim['source_candidate'] and
-            prepared.get('actor_ref') == authority['originating_ref'] == current.root['metadata']['controller_ref'] and
+            prepared.get('actor_ref') == authority['originating_ref'] and
             state_store.entry.digest(prepared) == authority['request_digest'] and
             prepared['verification']['checks'] == claim['verification']['checks'],
             'original native prepared request changed')
     if slot is not None:
-        require(slot['action_id'] == claim['native_stop']['action_id'] and slot['issuer_ref'] == authority['issuer_ref'] and
+        require(slot['originating_ref'] == authority['originating_ref'] and
+                slot['action_id'] == claim['native_stop']['action_id'] and slot['issuer_ref'] == authority['issuer_ref'] and
                 slot['prepare'] == prepared and slot['candidate'] == claim['source_candidate'] and
                 slot['ref'] == claim['reviewer_ref'] and slot['stopped'] and slot['start']['applied'] and
                 (not slot.get('query') or slot['query']['resolved']) and stop in slot['receipts'],
                 'original native slot/action/issuer/stop differs from claim')
     key = store.receipt_key(current, actor=authority['originating_ref'], kind='review:prepare',
         subject=authority['stage_subject'], invocation=claim['native_stop']['action_id'])
+    # The original CAS receipt binds this actor to the preparation accepted
+    # through its handoff; an immutable client request alone grants no role.
     preparation = store.read_receipt(current, key, prepared)
     require(preparation is not None and preparation['action_id'] == claim['native_stop']['action_id'] and
             preparation['issuer_ref'] == authority['issuer_ref'],

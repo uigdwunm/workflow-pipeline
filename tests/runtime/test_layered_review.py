@@ -747,11 +747,12 @@ class LayeredReviewTests(fixture.ProgressTests):
         original_read = progress.state_store.StateStore._read
         original_spool = progress.state_store.StateStore.write_raw_evidence
         accounts, spools = {}, []
-        def measured_read(store, path, maximum):
+        def measured_read(store, path, maximum, **kwargs):
             caller = sys._getframe(1).f_code.co_name
-            data = original_read(store, path, maximum)
+            data = original_read(store, path, maximum, **kwargs)
             account = accounts.setdefault(store, {'metadata': 0, 'raw_chunks': 0})
             category = 'raw_chunks' if maximum == 1024 * 1024 and caller in {'flush', 'read_raw_chunk', 'read_raw_evidence'} else 'metadata'
+            self.assertEqual(kwargs.get('raw_reference') is not None, category == 'raw_chunks')
             account[category] += len(data)
             return data
         def measured_spool(store, run_id, value, **kwargs):
@@ -1113,7 +1114,40 @@ class LayeredReviewTests(fixture.ProgressTests):
         self.assertEqual(accepted_a['source_candidate'], target)
         self.assertEqual(self.state()['control']['context']['handoff_progress']['review_claims']['ticket:B'], before['ticket:B'])
         reviews = self.delivery_reviews(target)
-        self.finish_certificate_delivery(target, reviews)
+        original_freeze = progress.freeze_implementation_native_owners
+        checked = [False]
+        def verify_retired_owner(state, store, current, prior):
+            if not checked[0]:
+                checked[0] = True
+                for label in ('not-activated', 'revoked-stop', 'same-ref', 'not-accepted'):
+                    rejected = copy.deepcopy(state)
+                    recovery = rejected['control']['context']['handoff_progress']['recovery']
+                    if label == 'not-activated':
+                        recovery.update(state='ready', activation=None)
+                    elif label == 'revoked-stop':
+                        rejected.setdefault('native_adverse', {})['native:dispatcher'] = {'status': 'running'}
+                    elif label == 'same-ref':
+                        recovery['activation']['replacement_ref'] = 'native:dispatcher'
+                    else:
+                        rejected['dispatch']['acceptance'] = None
+                    with self.subTest(label=label), store.measure_writes(sequence=True):
+                        with self.assertRaises((progress.entry.PreparationError, progress.control.ControlError)):
+                            original_freeze(rejected, store, current, prior)
+                owner = progress.Progress(self.checkpoint, {**current.root['outer'], progress.KEY: state})
+                with self.assertRaises(progress.entry.PreparationError) as no_grant:
+                    owner.finalization_owner('native:dispatcher')
+                self.assertEqual(no_grant.exception.code, 'result_incomplete')
+            result = original_freeze(state, store, current, prior)
+            self.assertNotIn('native:dispatcher', result)
+            self.assertIn('native:dispatcher-D2', result)
+            return result
+        with fixture.patch.object(progress, 'freeze_implementation_native_owners', verify_retired_owner):
+            self.finish_certificate_delivery(target, reviews)
+        self.assertTrue(checked[0])
+        prior, _, _ = progress.read_implementation_delivery(self.checkpoint,
+            self.state()['implementation_predecessor'])
+        self.assertIn('native:dispatcher', prior['native_refs'])
+        self.assertNotIn('native:dispatcher', prior['native_owner_refs'])
 
     def test_git_cli_rejects_whole_unprepared_native_claim_artifact_set(self):
         candidate = self.layered_flow()

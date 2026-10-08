@@ -1531,6 +1531,16 @@ class PlanRevisionProgressTests(unittest.TestCase):
         with patch.object(flow, "observation", side_effect=with_historical_agents):
             stage3 = flow.accept_current(payload, "native:dispatcher", fixture_execution=False)
         self.assertEqual(stage3["status"], "accepted", stage3)
+        store = progress.state_store.StateStore(flow.checkpoint)
+        current = store.open_current()
+        subject_id = current.root['metadata']['stage_subject']
+        persisted = store.read_subject(current, subject_id).value
+        self.assertLessEqual(current.root['subjects'][subject_id]['size'], progress.state_store.SUBJECT_LIMIT)
+        self.assertEqual(persisted['dispatch']['acceptance'], persisted['accepted'])
+        self.assertEqual(persisted['accepted']['kind'], 'current-implementation-acceptance-body-ref')
+        restored = progress.read_active_owner(flow.checkpoint)[progress.KEY]
+        self.assertEqual(restored['dispatch']['acceptance'], restored['accepted'])
+        progress.handoff.unseal(restored['dispatch'])
         predecessor = flow.state()["accepted"]
         stage4_input = flow.input_for(4, predecessor)
         current_scope = flow.state()['scope_authority']['scope']
@@ -1540,15 +1550,15 @@ class PlanRevisionProgressTests(unittest.TestCase):
             stage4_input['scope'])
         self.assertEqual(progress.handoff.prepare(stage4_input)["stage"], 4)
         original_checkpoint = flow.checkpoint.read_bytes()
-        altered = progress.read_record(flow.checkpoint)
-        altered[progress.KEY]["control"]["context"]["handoff_progress"]["plan_revisions"][-1]["evidence"]["planning_commit"] = accepted
+        altered = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+        altered.state["control"]["context"]["handoff_progress"]["plan_revisions"][-1]["evidence"]["planning_commit"] = accepted
         try:
-            progress.atomic_save(flow.checkpoint, altered)
             with self.assertRaises((progress.entry.PreparationError,
                                     progress.control_git.ControlError)):
+                altered.save()
                 progress.handoff.prepare(stage4_input)
         finally:
-            flow.checkpoint.write_bytes(original_checkpoint)
+            self.assertEqual(flow.checkpoint.read_bytes(), original_checkpoint)
         self.assertEqual(progress.handoff.prepare(stage4_input)["stage"], 4)
         current_progress = flow.state()["control"]["context"]["handoff_progress"]
         requirement = flow.flow / flow.state()["handoff"]["requirement_identity"]["path"]
@@ -1725,6 +1735,11 @@ class PlanRevisionProgressTests(unittest.TestCase):
                 accepted_result = flow.invoke("allocation", {"allocation_id": allocation_id,
                     "operation": "accept", "decision": {"reference": "dispatcher:" + allocation_id}})
                 self.assertEqual(accepted_result["next_action"]["result"]["status"], "accepted")
+            owner = progress.Progress(flow.checkpoint, progress.read_active_owner(flow.checkpoint))
+            for due_ticket in owner.ticket_checks_due():
+                checked = layered_fixture.LayeredReviewTests.early_ticket_check(
+                    flow, flow.flow_git('rev-parse', 'HEAD'), due_ticket)
+                self.assertTrue((checked.get('next_action') or {}).get('result', {}).get('ok'), checked)
 
         for identity, relative in (("FP1-01", "impl.py"), ("FP1-02", "later.py"),
                                    ("FP1-03", "independent.py"),
@@ -1739,7 +1754,8 @@ class PlanRevisionProgressTests(unittest.TestCase):
             "reviewer_ref": "integrated-" + axis, "status": "accepted"}
             for axis in ("standards", "spec")}
         with patch.object(flow, "observation", side_effect=with_historical_agents):
-            replaced = flow.accept_current(payload, "native:dispatcher", fixture_execution=False)
+            replaced = flow.accept_current(payload, "native:dispatcher", fixture_execution=False,
+                evidence_suffix='-final-integration')
         self.assertEqual(replaced["status"], "accepted", replaced)
         self.assertNotEqual(flow.state()["accepted"]["digest"], predecessor["digest"])
         after_integration = self.report(flow)
