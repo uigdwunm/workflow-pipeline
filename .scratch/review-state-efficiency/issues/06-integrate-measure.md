@@ -155,6 +155,14 @@ G4 恢复链的已确认增量：原命令 32 暴露只读 Git 计划投影被�
 
 这些已完成适配不自动覆盖新失败；实际目标适用性须核验。原失败日志：`t03-21-allocation-affected.log`（修改前核原文件名）、`t05-a-affected-layered-certificate.log`、`t05-a-affected-t04-claims.log`、`t05-a-affected-original-wrappers-attempt1.log`、`t05-a-affected-layered-cli-attempt3.log`、`t05-a-affected-t04-two-revisions.log`。其他 manifest verify 项保持只读，只有真实依赖证明且不扩大行为合同才按原范围晋升；新增机制须另确认。
 
+### 最后四个测试消费者已冻结
+
+以 `723cb94089de0eae5f123fb7eb36cce5962df35a` 为源基线，仅 collaboration_lifecycle、foreground_host、design_recovery、bounded_progress 四个原测试文件适配。原 70／31／8／137 个测试 ID、继承及 load_tests 不变；runtime、共享 helper、包和 runner 均未修改。真正使用的归档证明损坏拒绝、待关闭任务屏障、当前 real-pipe、前台三阶段 C/B/Git 和无重发、双任务停止屏障、第二轮独立业务恢复、真实 delivery 溢出无副作用均取得原目标定向 PASS；readonly attached-design 邻居通过。
+
+源快照 `t06-final-native-fixtures/candidate-source.json` SHA256 `5ca9b0be72d95ce27ad3636898f436b7ff48e1e508ae37b6c1f1696cbb7014df`；patch SHA256 `62a2514c9a4cf76160de5b0f48d1535bc0bdc9c879956cce3b5ac88bab71484a`。43 条实际命令与四个小于16KiB的分页见 index.json；original-failed-targets.json 对应原失败 ID。混合失败命令23／26保持原 exit1，未失败子用例仅按原 SHA 与后续局部 delta 限定复用，不能标为整文件通过。临时探针已移除，原作者和自有 runner 已停稳。
+
+运行时固定 `5e81a9f` 和 owner 固定 `723cb94` 的原独立审查均为 Standards0／localSpec新0；前者已关闭 dd11／ec 两项原 P2。下一步只有四测试固定增量审查、原交付两轴未覆盖增量与最终完整 gate；不重新审已有效 Ticket 证据、不新增机制。原 full02 的失败和 full01 的中断保持原候选与输出，最终候选须 clean 且全量运行前后输入相同。最终验证事实写入已有外部唯一管理记录与命令回执，不为结果再改动候选源文件。
+
 ## 验证与限制
 
 V01：所有仓库测试只经 `scripts/run_tests.py`，最终 `scripts/validate.sh`。若 runner 报已有运行，报告 owner 并结束该次验证，不绕锁。

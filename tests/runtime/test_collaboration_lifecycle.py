@@ -234,6 +234,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
         pending = f.invoke('receive-publication')['pending']
         f.invoke('decide', {'decision_id': pending['decision_id'], 'subject': pending['subject'],
             'answer': 'accept', 'reference': 'controller:accept'})
+        self.original_baseline_query = copy.deepcopy(f.state()['baseline_thread_queries'][0])
         successor = f.input_for(3, f.state()['accepted'])
         successor['authorization']['flow_mode'] = 'continuous'
         result = f.invoke('start', {'handoff': successor, 'native_host': self.inventory()})
@@ -264,8 +265,9 @@ class CollaborationLifecycleTests(unittest.TestCase):
     def test_missing_baseline_historical_read_cannot_be_relabelled_after_stage_entry(self):
         f = self.f
         self.test_missing_baseline_current_proof_allows_stage3_successor()
-        old_read = copy.deepcopy(f.state()['history'][-1]['baseline_thread_queries'][0]['result'])
-        request = copy.deepcopy(f.state()['history'][-1]['baseline_thread_queries'][0]['input'])
+        original_query = self.original_baseline_query
+        old_read = copy.deepcopy(original_query['result'])
+        request = copy.deepcopy(original_query['input'])
         f.invoke('observe', f.observation(ref='/root/dispatcher'))
         stopped = f.observation('stopped', 'result', ref='/root/dispatcher')
         stopped.pop('lifecycle')
@@ -471,11 +473,10 @@ class CollaborationLifecycleTests(unittest.TestCase):
             predecessor = f.state()['accepted']
             store = progress.state_store.StateStore(f.checkpoint)
             accepted_current = store.open_current()
-            slot = f.state()['allocations']['first-slice']
-            ticket_id = progress.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'][0]['ticket_id']
-            accepted_ticket_ref = copy.deepcopy(accepted_current.root['subjects']['ticket:' + ticket_id + ':0'])
-            accepted_record = copy.deepcopy(store.read_evidence(accepted_ticket_ref,
-                run_id=accepted_current.run_id, kind='subject')['value']['allocations']['first-slice']['record'])
+            slot = fixtures.ProgressTests.allocation_slot(f, 'first-slice')
+            accepted_archive = store.read_archive(accepted_current, 'allocation:first-slice')
+            self.assertEqual(accepted_archive.value['slot'], slot)
+            accepted_record = copy.deepcopy(slot['record'])
             (f.root / 'other-task.md').write_text('parallel update\n')
             f.git('add', 'other-task.md')
             f.git('commit', '-qm', 'parallel target update')
@@ -551,10 +552,17 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 self.assertEqual((original_owner['owner_ref'], original_owner['parent_thread'],
                                   original_owner['delivery_digest']),
                                  ('/root/dispatcher', 'dispatcher-runtime', accepted_record['acceptance']['digest']))
-                owner_object = store.directory / 'objects' / owner_ref['sha256'][:2] / owner_ref['sha256'][2:4] / owner_ref['sha256']
+                # The exact accepted allocation archive is the current owner
+                # source; the predecessor owner is only a fallback projection.
+                archive_source = accepted_archive.reference
+                owner_object = store._path(archive_source['sha256'])
                 owner_bytes = owner_object.read_bytes()
                 try:
-                    owner_object.write_bytes(b'corrupted original owner proof')
+                    owner_object.write_bytes(b'corrupted original allocation owner proof')
+                    with self.assertRaises(progress.entry.PreparationError) as error:
+                        progress.state_store.StateStore(f.checkpoint).read_evidence(
+                            archive_source, run_id=accepted_current.run_id, kind='subject')
+                    self.assertEqual(error.exception.code, 'state_object_corrupt')
                     with self.assertRaises(progress.entry.PreparationError) as error:
                         f.invoke('native-finalize', execution_close)
                     self.assertEqual(error.exception.code, 'state_object_corrupt')
@@ -580,9 +588,9 @@ class CollaborationLifecycleTests(unittest.TestCase):
             f.revalidate_integrated_execution()
             # The retired allocation is immutable audit evidence, not a live
             # allocation or execution permission in the recovered Controller.
-            retained_ticket = store.read_evidence(accepted_ticket_ref,
-                run_id=accepted_current.run_id, kind='subject')['value']
-            self.assertEqual(retained_ticket['allocations']['first-slice']['record'], accepted_record)
+            retained_archive = store.read_archive(store.open_current(), 'allocation:first-slice')
+            self.assertEqual(retained_archive.reference, accepted_archive.reference)
+            self.assertEqual(retained_archive.value['slot']['record'], accepted_record)
             self.assertNotIn('first-slice', f.state()['allocations'])
             self.assertIn('/root/dispatcher', agents)
             self.assertNotIn('/root/dispatcher/executor', agents)
@@ -706,7 +714,8 @@ class CollaborationLifecycleTests(unittest.TestCase):
         request, finish, close = self.finish_execution()
         f.invoke('native-finalize', self.finalize_observation(close))
         f.invoke('lifecycle-state', self.snapshot(self.execution_inventory(False)))
-        original = json.loads(f.checkpoint.read_text())
+        original = progress.read_active_owner(f.checkpoint)
+        original_records = copy.deepcopy(original[progress.KEY]['native_finalizations'])
         changes = [
             lambda record, value=value: record.update(prepare=value)
             for value in (None, 'invalid', [])
@@ -720,22 +729,33 @@ class CollaborationLifecycleTests(unittest.TestCase):
                         lambda record: record['actions'][-1]['payload'].pop('adapter'),
                         lambda record: record.update(verified=True),
                         lambda record: record['verified'].pop('inventory')))
-        changes.extend(lambda record, value=value: record.update(revoked=value)
+        changes.extend(lambda record, value=value: record.update(revoked=(
+            {**value, 'checkpoint_revision': f.state()['revision'] + 2}
+            if isinstance(value, dict) and value.get('checkpoint_revision') == original[progress.KEY]['revision'] + 1
+            else value))
                        for value in (None, {}, {'checkpoint_revision': True, 'evidence': {'event': 'activity'}},
                                      {'checkpoint_revision': -1, 'evidence': {'event': 'activity'}},
                                      {'checkpoint_revision': original[progress.KEY]['revision'] + 1,
                                       'evidence': {'event': 'activity'}},
                                      {'checkpoint_revision': 0, 'evidence': []}))
         for index, change in enumerate(changes):
-            damaged = copy.deepcopy(original)
-            change(damaged[progress.KEY]['native_finalizations'][0])
-            f.checkpoint.write_text(json.dumps(damaged))
-            before = f.checkpoint.read_bytes()
+            damaged = progress.Progress(f.checkpoint, progress.read_active_owner(f.checkpoint))
+            change(damaged.state['native_finalizations'][0])
+            before, published = f.checkpoint.read_bytes(), False
             with self.subTest(case=index):
-                with self.assertRaises(progress.entry.PreparationError) as error:
-                    f.invoke('inspect')
-                self.assertEqual(error.exception.code, 'invalid_checkpoint')
-                self.assertEqual(f.checkpoint.read_bytes(), before)
+                try:
+                    with self.assertRaises(progress.entry.PreparationError) as error:
+                        damaged.save()
+                        published = True
+                        f.invoke('inspect')
+                    self.assertEqual(error.exception.code, 'invalid_checkpoint')
+                    if not published:
+                        self.assertEqual(f.checkpoint.read_bytes(), before)
+                finally:
+                    if published:
+                        restored = progress.Progress(f.checkpoint, progress.read_active_owner(f.checkpoint))
+                        restored.state['native_finalizations'] = copy.deepcopy(original_records)
+                        restored.save()
 
     def test_stale_prepare_only_recovers_finish_and_current_revision_may_issue_close(self):
         f = self.f
@@ -775,7 +795,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
                 'tests': ['real descendant bytes verified'],
                 'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record']),
-                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_refs': progress.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'],
                 'plan_authority': f.state()['control']['context']['handoff_progress']['plan_authority']}}})
         f.invoke('allocation', {'allocation_id': 'descendant-slice', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:accept-descendant'}})
@@ -1016,9 +1036,17 @@ class CollaborationLifecycleTests(unittest.TestCase):
         # Revoking release after creation cannot erase or reissue the saved call.
         f.invoke('lifecycle-state', self.snapshot(self.inventory(agents)))
         self.assertTrue(f.state()['native_finalizations'][0]['revoked'])
-        repeated = f.invoke('control', intent)['next_action']
-        self.assertEqual(repeated['operation'], 'lookup-recovery-host')
-        self.assertEqual(repeated['request'], issued['request'])
+        saved_recovery = copy.deepcopy(f.state()['control']['context']['handoff_progress']['recovery'])
+        before = f.checkpoint.read_bytes()
+        repeated = f.invoke('control', intent)
+        self.assertTrue(repeated['acknowledged'], repeated)
+        self.assertEqual(repeated['next_action']['operation'], 'control-effects')
+        self.assertEqual(repeated['next_action']['result']['effects'], [])
+        self.assertIs(repeated['next_action']['write_authority'], False)
+        self.assertEqual(f.checkpoint.read_bytes(), before)
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['recovery'], saved_recovery)
+        self.assertEqual({key: issued['request'][key] for key in saved_recovery['intent']},
+                         saved_recovery['intent'])
         receipt = {'adapter': 'fixture-native', 'call_ref': 'original-replacement-call',
             'response_ref': 'unknown-original-replacement', 'intent_id': issued['request']['intent_id'],
             'status': 'unknown', 'ref': None, 'raw': {'status': 'unknown', 'write_authority': False}}
@@ -1268,12 +1296,24 @@ class CollaborationLifecycleTests(unittest.TestCase):
         f.flow_git('add', 'impl.py')
         f.flow_git('commit', '-qm', 'integrate accepted candidate for review')
         candidate = f.flow_git('rev-parse', 'HEAD')
-        idle = f.observation('idle', 'result', ref='/root/dispatcher')
-        idle.pop('lifecycle', None)
-        f.invoke('observe', idle)
+        # The existing Dispatcher remains running while its real local/Ticket
+        # reviews are accepted; an unrequested idle result is no business intent.
+        self.assertEqual(f.state()['host']['status'], 'running')
         f.settings['thread_id'] = 'task'
         f.request['host'].update(thread_id='task', role='controller', source_ref=None)
         f.request['host'].pop('actor_ref', None)
+        agents = {row['agent_name']: row['agent_status'] for row in self.execution_inventory(False)['response']['agents']}
+        invoke = f.invoke
+        def local_host(operation, data=None, revision=None):
+            result = invoke(operation, data, revision)
+            receipt = (data or {}).get('receipt') or {}
+            if operation == 'review-activity' and (data or {}).get('operation') == 'observe' and receipt.get('ref'):
+                agents[receipt['ref']] = {'completed': 'original reviewer stopped'}
+                invoke('lifecycle-state', self.snapshot(self.inventory([
+                    {'agent_name': ref, 'agent_status': status} for ref, status in sorted(agents.items())])))
+            return result
+        with patch.object(f, 'invoke', side_effect=local_host):
+            fixtures.ProgressTests.complete_fixture_local_reviews(f, candidate, '-saved-review-query')
         current = f.state()['control']['context']
         plan = current['handoff_progress']['validation_plan']
         checks = fixtures.transfer.checks_for(plan['review_required'], candidate)
@@ -1289,6 +1329,9 @@ class CollaborationLifecycleTests(unittest.TestCase):
             'verification': {'candidate': candidate, 'plan_digest': fixtures.transfer.control.digest(plan),
                 'checks': checks, 'plan_authority': f.state()['control']['context']['handoff_progress']['plan_authority']}}
         issued = f.invoke('review-activity', prepare)['next_action']
+        original_lookup = f.invoke('review-activity', prepare)['next_action']
+        self.assertEqual(original_lookup['operation'], 'lookup-exact-review')
+        self.assertEqual(original_lookup['action_id'], issued['action_id'])
         saved = copy.deepcopy(f.state()['review_activity']['standards'])
         f.invoke('host-event', {'instance': f.state()['native_host']['instance'], 'event': {
             'type': 'subAgentActivity', 'id': 'reappeared-during-review', 'kind': 'interacted',
@@ -1297,8 +1340,11 @@ class CollaborationLifecycleTests(unittest.TestCase):
         self.assertEqual(recovered['next_action']['operation'], 'lookup-exact-review', recovered)
         self.assertEqual(recovered['next_action']['action_id'], issued['action_id'])
         self.assertEqual(f.state()['review_activity']['standards'], saved)
-        blocked = f.invoke('review-activity', {**prepare, 'axis': 'spec'})
-        self.assertEqual(blocked['error']['code'], 'host_action_pending')
+        before = f.checkpoint.read_bytes()
+        with self.assertRaises(progress.entry.PreparationError) as blocked:
+            f.invoke('review-activity', {**prepare, 'axis': 'spec'})
+        self.assertEqual(blocked.exception.code, 'host_action_pending')
+        self.assertEqual(f.checkpoint.read_bytes(), before)
         self.assertNotIn('spec', f.state()['review_activity'])
 
     def test_native_retirement_rejects_invalid_delivery_digest(self):
@@ -1351,7 +1397,7 @@ class CollaborationLifecycleTests(unittest.TestCase):
                 'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(data).hexdigest()},
                 'tests': ['real sibling bytes verified'],
                 'write_release': fixtures.transfer.dispatch.execution_release_token(slot['record']),
-                'plan_refs': slot['record']['handoff']['semantic']['plan_refs'],
+                'plan_refs': progress.handoff.resolve_allocation(slot['handoff'])['semantic']['plan_refs'],
                 'plan_authority': f.state()['control']['context']['handoff_progress']['plan_authority']}}})
         f.invoke('allocation', {'allocation_id': 'sibling', 'operation': 'accept',
             'decision': {'reference': 'dispatcher:accept-sibling'}})

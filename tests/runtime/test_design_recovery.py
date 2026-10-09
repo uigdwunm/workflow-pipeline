@@ -3,15 +3,15 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
-from test_workflow_progress import ProgressTests
+import test_workflow_progress as scenario
 
 
 class DesignRecoveryTests(unittest.TestCase):
     def setUp(self):
-        self.f = ProgressTests(methodName='runTest')
+        self.f = scenario.ProgressTests(methodName='runTest')
         self.f.setUp(); self.addCleanup(self.f.doCleanups)
 
-    def prepared(self):
+    def prepared(self, *, resumable=False):
         f = self.f
         f.begin('continuous'); f.invoke('observe', f.observation())
         if hasattr(f, 'activate_designer'):
@@ -21,7 +21,7 @@ class DesignRecoveryTests(unittest.TestCase):
         (f.flow / self.path).parent.mkdir(parents=True, exist_ok=True)
         (f.flow / self.path).write_text('retained design draft\n')
         stopped = f.observation('stopped', 'result')
-        stopped['receipt']['raw'].update(resumable=False, dispatch_available=True)
+        stopped['receipt']['raw'].update(resumable=resumable, dispatch_available=True)
         f.invoke('observe', stopped)
         evidence = {'dispatcher_ref':'native:designer', 'attempt':f.state()['control']['context']['carrier']['attempt'],
             'reference':'controller:recover', 'reason':'original designer cannot resume',
@@ -53,7 +53,9 @@ class DesignRecoveryTests(unittest.TestCase):
         f.invoke('control', {'action':'dispatch-recovery-result',
             'evidence':{'recovery_id':recovery['recovery_id'],'receipt':receipt},'receipt':receipt})
         snapshot = f.observation('stopped','result')['lifecycle']
-        snapshot['pages'][0]['response']['data'].append({'id':'native:replacement','status':{'type':'idle'}})
+        rows = snapshot['pages'][0]['response']['data']
+        self.assertEqual(sum(row['id'] == 'native:replacement' for row in rows), 1)
+        self.assertEqual(next(row['status'] for row in rows if row['id'] == 'native:replacement'), {'type': 'idle'})
         f.invoke('lifecycle-state', snapshot)
         return {'action':'recover-dispatch', 'evidence':{**request['evidence'],'replacement_ref':'native:replacement'},
             'receipt':request['receipt']}
@@ -64,7 +66,11 @@ class DesignRecoveryTests(unittest.TestCase):
         self.assertFalse(intent['write_authority'])
         self.assertEqual(set(recovery['ownership']), {'designer'})
         self.assertIn('design_input', intent); self.assertNotIn('plan_digest', intent)
-        self.assertEqual(f.invoke('control', request)['next_action']['operation'], 'lookup-recovery-host')
+        replayed = f.invoke('control', request)
+        self.assertTrue(replayed['acknowledged'], replayed)
+        self.assertEqual(replayed['next_action']['operation'], 'control-effects', replayed)
+        self.assertEqual(replayed['next_action']['result']['effects'], [])
+        self.assertIs(replayed['next_action']['write_authority'], False)
         self.assertNotIn('executions', f.state()['control']['context']['handoff_progress'])
 
     def test_activation_keeps_bytes_and_rejects_late_old_results(self):
@@ -127,7 +133,10 @@ class DesignRecoveryTests(unittest.TestCase):
             result = f.invoke(operation)
             self.assertEqual(result['next_action']['operation'], 'lookup-recovery-host', result)
         result = f.invoke('control', request)
-        self.assertEqual(result['next_action']['operation'], 'lookup-recovery-host', result)
+        self.assertTrue(result['acknowledged'], result)
+        self.assertEqual(result['next_action']['operation'], 'control-effects', result)
+        self.assertEqual(result['next_action']['result']['effects'], [])
+        self.assertIs(result['next_action']['write_authority'], False)
         self.assertEqual(f.state()['control']['context']['carrier']['ref'], 'native:designer')
 
     def test_pause_prevents_replacement(self):
@@ -140,14 +149,13 @@ class DesignRecoveryTests(unittest.TestCase):
         self.assertNotIn('recovery', f.state()['control']['context']['handoff_progress'])
 
     def test_resumable_original_does_not_prepare_replacement(self):
-        request = self.prepared(); f = self.f
-        import workflow_progress as progress
-        outer = progress.read_record(f.checkpoint)
-        outer[progress.KEY]['host']['last_stop']['receipt']['raw']['resumable'] = True
-        progress.atomic_save(f.checkpoint, outer)
+        request = self.prepared(resumable=True); f = self.f
+        original = f.state()['host']['last_stop']
+        self.assertIs(scenario.progress.host_raw_facts(original['receipt'])['resumable'], True)
         result = f.invoke('control', request)
         self.assertEqual(result['status'], 'blocked', result)
         self.assertNotIn('recovery', f.state()['control']['context']['handoff_progress'])
+        self.assertEqual(f.state()['host']['last_stop'], original)
 
 
 def load_tests(loader, tests, pattern):

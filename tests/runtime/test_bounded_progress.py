@@ -247,22 +247,33 @@ class BoundedProgressTests(ProgressTests):
 
     def test_public_review_worst_result_schema_is_checked_before_effect(self):
         prepare = self.public_review_candidate()
-        self.save_transport(instance='fixture-host', state='live', native_event_sequence=0)
+        first = self.invoke('review-activity', prepare)['next_action']
+        # These opaque identifiers satisfy the existing 4096-byte public
+        # boundary and occupy the actual delivery review subject, not Stage C.
+        opaque = '\x01' * 4096
+        running = self.public_review_response(prepare, first, 'running',
+            call=opaque, response='\x02' * 4096, ref='native:running-review',
+            raw={'status': 'running', 'source': 'original native tool response'})
+        running['receipt']['adapter'] = '\x03' * 4096
+        observed = self.invoke('review-activity', running)
+        self.assertNotEqual(observed['status'], 'blocked', observed)
+        original_slot = copy.deepcopy(self.state()['review_activity']['standards'])
         store = progress.state_store.StateStore(self.checkpoint)
-        current = store.open_current()
-        subject_size = current.root['subjects'][current.root['metadata']['stage_subject']]['size']
-        # Leave 16KiB in the public subject budget, less than the worst native outcome.
-        event = {'method': 'item/completed', 'params': {'threadId': self.settings['thread_id'],
-            'item': {'type': 'subAgentActivity', 'id': 'x' * (240 * 1024 - subject_size), 'kind': 'started',
-                     'agentPath': 'native:review-executor', 'agentThreadId': 'native:review-executor'}}}
-        self.invoke('host-event', {'instance': 'fixture-host', 'event': event})
-        authority = self.checkpoint.read_bytes()
+        before = self.checkpoint.read_bytes()
+        original_control = copy.deepcopy(self.state()['control'])
+        files = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                 for path in store.directory.rglob('*') if path.is_file()}
         with self.assertRaises(transfer.entry.PreparationError) as error:
-            self.invoke('review-activity', prepare)
+            self.invoke('review-activity', {**prepare, 'axis': 'spec'})
         self.assertEqual(error.exception.code, 'state_capacity')
-        self.assertEqual(self.checkpoint.read_bytes(), authority)
-        self.assertEqual(self.state()['control']['context']['handoff_progress']['state'], 'reviewable')
-        self.assertFalse(list((store.directory / 'reserves' / 'business').glob('*')))
+        self.assertIn('review:delivery:0', str(error.exception))
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+        self.assertEqual({str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                          for path in store.directory.rglob('*') if path.is_file()}, files)
+        self.assertEqual(self.state()['control'], original_control)
+        self.assertEqual(self.state()['review_activity']['standards'], original_slot)
+        self.assertFalse(original_slot['stopped'])
+        self.assertNotIn('spec', self.state()['review_activity'])
 
     def test_public_review_ordinary_capacity_is_checked_before_reserving(self):
         prepare = self.public_review_candidate()
@@ -284,7 +295,11 @@ class BoundedProgressTests(ProgressTests):
             action = self.invoke('review-activity', request)['next_action']
             self.invoke('review-activity', self.public_review_response(request, action, 'stopped',
                 call='complete-' + axis, response='complete-result-' + axis, ref='native:' + axis,
-                raw={'status': 'completed', 'output': 'x' * (50 * 1024)}))
+                raw={'status': 'completed', 'output': 'x' * (50 * 1024), 'review': {
+                    'status': 'accepted', 'findings': [], 'checks': request['verification']['checks'],
+                    **{key: action['review_scope'][key] for key in
+                       ('read_paths', 'ac_refs', 'requirement_refs', 'dependency_claim_ids')},
+                    'review_scope': action['review_scope']}}))
         checkpoint = self.state()['control']['context']['handoff_progress']
         review = {axis: {'candidate': prepare['candidate'],
             'expected_target_head': checkpoint['expected_target_head'], 'plan_digest': checkpoint['plan_digest'],
@@ -654,26 +669,26 @@ class BoundedProgressTests(ProgressTests):
             self.assertNotEqual(captured['status'], 'blocked', captured)
         with patch.dict(self.settings, thread_id='dispatcher-runtime'):
             execution = self.inherited_execution_input()
-            prepared = self.invoke('allocation', {'allocation_id': 'repair',
+            prepared = self.invoke('allocation', {'allocation_id': 'repair' + suffix,
                 'operation': 'prepare', 'handoff': execution})
             self.assertEqual((prepared.get('next_action') or {}).get('operation'), 'invoke-host', prepared)
-            slot = self.allocation_slot('repair')
-            bound = self.invoke('allocation', {'allocation_id': 'repair', 'operation': 'bind',
-                'receipt': {**self.receipt(slot['record'], ref='native:repair'), 'receipt_ref': 'host:repair-bind' + suffix}})
+            slot = self.allocation_slot('repair' + suffix)
+            bound = self.invoke('allocation', {'allocation_id': 'repair' + suffix, 'operation': 'bind',
+                'receipt': {**self.receipt(slot['record'], ref='native:repair' + suffix), 'receipt_ref': 'host:repair-bind' + suffix}})
             self.assertIsNotNone(bound['next_action'], bound)
             content = ("print('repaired accepted implementation" + suffix + "')\n").encode()
             (self.flow / 'impl.py').write_bytes(content)
-            slot = self.allocation_slot('repair')
-            received = self.invoke('allocation', {'allocation_id': 'repair', 'operation': 'receive',
-                'receipt': {**self.receipt(slot['record'], 'stopped', 'result', ref='native:repair'),
+            slot = self.allocation_slot('repair' + suffix)
+            received = self.invoke('allocation', {'allocation_id': 'repair' + suffix, 'operation': 'receive',
+                'receipt': {**self.receipt(slot['record'], 'stopped', 'result', ref='native:repair' + suffix),
                     'receipt_ref': 'host:repair-result' + suffix},
-                'result': {'delivery_id': 'repair-result', 'status': 'completed', 'payload': {
+                'result': {'delivery_id': 'repair-result' + suffix, 'status': 'completed', 'payload': {
                     'changed_paths': ['impl.py'], 'file_hashes': {'impl.py': hashlib.sha256(content).hexdigest()},
                     'tests': ['repaired behavior passed'], 'write_release': bound['next_action']['result']['write_release'],
                     'plan_refs': execution['semantic']['plan_refs'],
                     'plan_authority': self.state()['control']['context']['handoff_progress']['plan_authority']}}})
             self.assertEqual(received['next_action']['result']['status'], 'received', received)
-            self.assertEqual(self.invoke('allocation', {'allocation_id': 'repair', 'operation': 'accept',
+            self.assertEqual(self.invoke('allocation', {'allocation_id': 'repair' + suffix, 'operation': 'accept',
                 'decision': {'reference': 'dispatcher:repair' + suffix}})['next_action']['result']['status'], 'accepted')
         self.flow_git('add', 'impl.py')
         self.flow_git('commit', '-qm', 'repair accepted implementation')
@@ -1614,6 +1629,8 @@ class BoundedProgressTests(ProgressTests):
         plan = initial['semantic']['inline_plan']
         plan['steps'].append({**copy.deepcopy(plan['steps'][0]), 'id': 'inline-peer',
                               'target': {'path': 'peer.py', 'symbol': 'run', 'operation': 'add'}})
+        plan['behavior_slices'].append({**copy.deepcopy(plan['behavior_slices'][0]),
+            'id': 'inline-peer', 'step_ids': ['inline-peer']})
         self.begin('continuous', initial)
         self.invoke('observe', self.observation(ref='native:dispatcher'))
         objects = self.checkpoint.with_name(self.checkpoint.name + '.state') / 'objects'
@@ -2476,7 +2493,8 @@ class BoundedProgressTests(ProgressTests):
         directory = self.checkpoint.with_name(self.checkpoint.name + '.state')
         reserve = directory / 'reserves' / 'recovery' / hashlib.sha256(action_id.encode()).hexdigest()
         before = reserve.stat().st_size
-        wrong = self.observation('stopped', 'result', ref='native:intruder')
+        wrong = self.observation('stopped', 'result', ref='native:dispatcher')
+        wrong['receipt']['ref'] = 'native:intruder'
         result = self.invoke('observe', wrong)
         self.assertEqual(result['error']['code'], 'identity_mismatch')
         self.assertEqual(self.state()['observations'][-1], wrong, 'rejected raw evidence remains auditable')

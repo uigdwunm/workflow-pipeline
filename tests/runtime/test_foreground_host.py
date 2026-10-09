@@ -191,7 +191,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         def bind_native():
             try:
                 deadline = time.monotonic() + 10
-                while progress.read_record(self.checkpoint).get('sessions', {}).get('stage2') != 'carrier':
+                while runner._read_checkpoint(self.checkpoint, projection='identity').get('sessions', {}).get('stage2') != 'carrier':
                     if time.monotonic() > deadline: raise RuntimeError('carrier did not bind')
                     time.sleep(0.01)
                 self.settings['thread_id'] = 'carrier'
@@ -214,10 +214,15 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
             if command[0] == str(host) and '--version' not in command:
                 self.host_processes.append(process)
             return process
-        with patch.object(runner, '__file__', str(cli.SCRIPT)), patch.dict(os.environ, {'CODEX_BIN':str(host),'HOST_LOG':str(log)}), patch.object(subprocess,'Popen',side_effect=spawn), redirect_stdout(io.StringIO()):
-            with self.assertRaisesRegex(runner.WorkflowError, expected_error):
-                runner.start(confirmed)
-        worker.join(10)
+        try:
+            with patch.object(runner, '__file__', str(cli.SCRIPT)), patch.dict(os.environ, {'CODEX_BIN':str(host),'HOST_LOG':str(log)}), patch.object(subprocess,'Popen',side_effect=spawn), redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(runner.WorkflowError, expected_error):
+                    runner.start(confirmed)
+        finally:
+            Path(str(log)+'.ready').touch()
+            if worker.ident is not None:
+                worker.join(10)
+                self.assertFalse(worker.is_alive(), 'owned native fixture must stop before cleanup')
         self.assertEqual(errors, [])
         return created, log, confirmed
 
@@ -229,7 +234,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         self.assertEqual(self.state()['control']['context']['carrier']['ref'], 'native:designer')
         self.assertEqual(self.state()['host']['status'], 'unknown')
         self.assertIsNone(self.state()['host']['proof'])
-        saved = progress.read_record(self.checkpoint)
+        saved = runner._read_checkpoint(self.checkpoint, projection='identity')
         self.assertNotIn('carrier_turns', saved)
         self.assertNotIn('raw_events', saved['launch'])
         before = self.checkpoint.read_bytes()
@@ -238,7 +243,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         self.assertEqual(self.checkpoint.read_bytes(), before)
 
     def test_legacy_runner_is_read_only(self):
-        for version in (1, 2, 3):
+        for version in (1, 2, 3, 10):
             self.checkpoint.write_text(json.dumps({'version':version}))
             before = self.checkpoint.read_bytes()
             with self.assertRaisesRegex(runner.WorkflowError, 'legacy_run_requires_original_runtime'):
@@ -252,7 +257,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
             with self.assertRaisesRegex(runner.WorkflowError,'host_version_changed'):
                 runner.start(confirmed)
             self.assertFalse(log.exists())
-            saved = progress.read_record(self.checkpoint)
+            saved = runner._read_checkpoint(self.checkpoint, projection='identity')
             self.assertEqual(saved['launch']['state'],'prelaunch')
             self.assertEqual(saved['sessions'],{})
             self.assertNotIn('transport',saved)
@@ -270,6 +275,9 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         def fail_checkpoint(source, target):
             if Path(target).resolve() == self.checkpoint.resolve() and not failed:
                 value = json.loads(Path(source).read_text())
+                if value.get('store_format') == progress.state_store.FORMAT:
+                    store = progress.state_store.StateStore(self.checkpoint)
+                    value = json.loads(store._path(value['current']['sha256']).read_text())['value']['outer']
                 if value.get('turn_result', {}).get('result') == 'continue':
                     failed.append(True)
                     raise OSError('injected checkpoint failure')
@@ -285,7 +293,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
             runner.resume(self.checkpoint)
         self.assertEqual(log.read_bytes(),before_log)
         self.assertEqual(self.flow_git('rev-parse','HEAD'),before_head)
-        saved = progress.read_record(self.checkpoint)
+        saved = runner._read_checkpoint(self.checkpoint, projection='identity')
         self.assertEqual(saved['turn_result']['result'],'continue')
         self.assertNotIn('carrier_turns', saved)
         self.assertNotIn('raw_events', saved['launch'])
@@ -318,7 +326,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         with patch.object(runner,'__file__',str(cli.SCRIPT)), self.assertRaisesRegex(runner.WorkflowError,'await-host-recovery'):
             runner.resume(self.checkpoint)
         self.assertEqual(log.read_bytes(),before)
-        saved = progress.read_record(self.checkpoint)
+        saved = runner._read_checkpoint(self.checkpoint, projection='identity')
         self.assertEqual(saved['turn_result']['result'],'continue')
         self.assertNotIn('carrier_turns', saved)
         self.assertNotIn('raw_events', saved['launch'])
@@ -337,7 +345,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
             try:
                 deadline = time.monotonic()+20
                 while len(seen) < 2 and not aborting.is_set():
-                    pending = progress.read_record(self.checkpoint).get('pending_input') or {}
+                    pending = runner._read_checkpoint(self.checkpoint, projection='identity').get('pending_input') or {}
                     if pending.get('kind') == 'host-request' and pending['decision_id'] not in seen:
                         answer = json.dumps({'decision':'decline'})
                         runner.resume(self.checkpoint,answer,decision_id=pending['decision_id'])
@@ -382,8 +390,8 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
                     runner.resume(self.checkpoint, 'choice B', decision_id=pending['decision_id'])
                 with self.assertRaisesRegex(runner.WorkflowError, 'stale_decision'):
                     runner.resume(self.checkpoint, 'choice A', decision_id='old')
-        saved = progress.read_record(self.checkpoint)
-        self.assertEqual(saved[progress.KEY], before_c)
+        saved = runner._read_checkpoint(self.checkpoint, projection='identity')
+        self.assertEqual(self.state(), before_c)
         self.assertEqual(saved['controller_decision']['subject'], pending['subject'])
         self.assertEqual(saved['controller_decision']['answer'], 'choice A')
         self.assertEqual(saved['sessions'], {})
@@ -427,7 +435,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
                     self.assertFalse(any(event['kind']=='server-response-sent' for event in events))
                     self.assertEqual(sum(event.get('request',{}).get('method')=='turn/steer' for event in events),1)
                     self.assertFalse(any(call['event']=='server-response' for call in host_calls(log)))
-                    self.assertIn('server_decision',progress.read_record(self.checkpoint)['transport'])
+                    self.assertIn('server_decision',runner._read_checkpoint(self.checkpoint, projection='identity')['transport'])
                 finally:
                     host.close()
 
@@ -439,10 +447,19 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
         script = script.replace("response = {'turn':", "\n        if turn == 2:\n            while not Path(str(log)+'.answered').exists(): time.sleep(0.01)\n        response = {'turn':")
         executable.write_text(script.replace("'technical_error'", "'invalid-kind'"))
         errors, native_errors = [], []
+        aborting = threading.Event()
+        processes = []
+        popen = subprocess.Popen
+        def spawn(command, *args, **kwargs):
+            process = popen(command, *args, **kwargs)
+            if command[0] == str(executable) and '--version' not in command:
+                processes.append(process)
+            return process
         def native_adapter():
             try:
                 deadline = time.monotonic() + 15
-                while progress.read_record(self.checkpoint).get('sessions', {}).get('stage2') != 'carrier':
+                while runner._read_checkpoint(self.checkpoint, projection='identity').get('sessions', {}).get('stage2') != 'carrier':
+                    if aborting.is_set(): return
                     if time.monotonic() > deadline: raise RuntimeError('carrier did not bind')
                     time.sleep(0.01)
                 self.settings['thread_id'] = 'carrier'
@@ -454,11 +471,12 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
                     {'delivery_id':'question','status':'needs_input','payload':{'question':'choose behavior'}}))
                 Path(str(log)+'.ready').touch()
                 while True:
+                    if aborting.is_set(): return
                     turns = [call for call in host_calls(log) if call.get('method') == 'turn/start']
                     if len(turns) == 2: break
                     if time.monotonic() > deadline: raise RuntimeError('second carrier turn not delivered')
                     time.sleep(0.01)
-                decision = progress.read_record(self.checkpoint)['controller_decision']
+                decision = runner._read_checkpoint(self.checkpoint, projection='identity')['controller_decision']
                 self.invoke('decide', decision)
             except BaseException as error:
                 native_errors.append(error)
@@ -470,19 +488,30 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
                 runner.start(confirmed)
             except BaseException as error:
                 errors.append(error)
-        with patch.object(runner,'__file__',str(cli.SCRIPT)), patch.dict(os.environ,{'CODEX_BIN':str(executable),'HOST_LOG':str(log)}), redirect_stdout(io.StringIO()):
+        with patch.object(runner,'__file__',str(cli.SCRIPT)), patch.dict(os.environ,{'CODEX_BIN':str(executable),'HOST_LOG':str(log)}), patch.object(subprocess, 'Popen', side_effect=spawn), redirect_stdout(io.StringIO()):
             native = threading.Thread(target=native_adapter)
             owner = threading.Thread(target=run_owner)
             native.start(); owner.start()
-            deadline = time.monotonic() + 15
-            while not progress.read_record(self.checkpoint).get('pending_input'):
-                if not owner.is_alive(): break
-                self.assertLess(time.monotonic(), deadline)
-                time.sleep(0.01)
-            pending = progress.read_record(self.checkpoint)['pending_input']
-            self.assertTrue(owner.is_alive())
-            self.assertEqual(runner.resume(self.checkpoint,'choice A',decision_id=pending['decision_id']),0)
-            owner.join(15); native.join(15)
+            try:
+                deadline = time.monotonic() + 15
+                while not runner._read_checkpoint(self.checkpoint, projection='identity').get('pending_input'):
+                    if not owner.is_alive(): break
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.01)
+                pending = runner._read_checkpoint(self.checkpoint, projection='identity')['pending_input']
+                self.assertTrue(owner.is_alive())
+                self.assertEqual(runner.resume(self.checkpoint,'choice A',decision_id=pending['decision_id']),0)
+                owner.join(15); native.join(15)
+            finally:
+                aborting.set()
+                Path(str(log)+'.ready').touch()
+                Path(str(log)+'.answered').touch()
+                if owner.is_alive():
+                    for process in processes:
+                        if process.poll() is None: process.terminate()
+                owner.join(5); native.join(5)
+                self.assertFalse(owner.is_alive())
+                self.assertFalse(native.is_alive())
         self.assertFalse(owner.is_alive())
         self.assertEqual(native_errors, [])
         self.assertEqual(len(errors),1)
@@ -537,7 +566,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
             self.assertEqual(runner.resume(self.checkpoint),0)
             self.assertEqual(log.read_bytes(),before)
         self.assertEqual(errors,[])
-        saved = progress.read_record(self.checkpoint)
+        saved = runner._read_checkpoint(self.checkpoint, projection='identity')
         self.assertEqual(saved['status'],'completed')
         self.assertEqual(set(saved['stage_results']),{'stage2','stage3','stage4'})
         self.assertFalse(self.flow.exists())
@@ -561,10 +590,11 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
                 self.invoke('observe', self.observation())
                 self.invoke('pause')
                 thread = host.start_carrier('stage2',{'model':'fixture-model','reasoning_effort':'high'})
-                saved = progress.read_record(self.checkpoint)
+                saved = runner._read_checkpoint(self.checkpoint, projection='identity')
                 saved['sessions'] = {'stage2':thread}
                 saved['transport'] = {'instance':host.instance,'state':'live','native_event_sequence':0}
-                progress.atomic_save(self.checkpoint,saved)
+                progress.save_outer_record(self.checkpoint, {key: value for key, value in saved.items() if key != progress.KEY},
+                    expected_revision=saved.authority_revision)
                 observation = self.observation('stopped','result')
                 observation['lifecycle'] = host.snapshot_lifecycle('stage2')
                 result = self.invoke('observe',observation)
@@ -609,7 +639,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
                         self.invoke('pause')
                         self.assertEqual(self.invoke('observe',self.observation('stopped','result'))['status'],'paused')
                     elif turn == 3:
-                        decision = progress.read_record(self.checkpoint)['controller_decision']
+                        decision = runner._read_checkpoint(self.checkpoint, projection='identity')['controller_decision']
                         self.assertEqual(self.invoke('decide',decision)['status'],'paused')
                     elif turn == 4:
                         self.assertEqual(self.invoke('resume')['next_action']['operation'],'inspect-host-state')
@@ -636,7 +666,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
             except BaseException as error: errors.append(error)
         def wait_for(predicate):
             deadline = time.monotonic()+35
-            while not predicate(progress.read_record(self.checkpoint)):
+            while not predicate(runner._read_checkpoint(self.checkpoint, projection='identity')):
                 if errors: raise AssertionError(str(errors))
                 self.assertLess(time.monotonic(),deadline)
                 time.sleep(.02)
@@ -645,12 +675,12 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
             worker.start(); owner_thread.start()
             try:
                 wait_for(lambda value:value.get('status') == 'needs_input')
-                pending = progress.read_record(self.checkpoint)['pending_input']
+                pending = runner._read_checkpoint(self.checkpoint, projection='identity')['pending_input']
                 runner.request_control(self.checkpoint,'pause')
                 wait_for(lambda value:value.get('status') == 'paused')
                 self.assertTrue(owner_thread.is_alive())
                 runner.resume(self.checkpoint,'choice A',decision_id=pending['decision_id'])
-                wait_for(lambda value:pending['decision_id'] in value.get(progress.KEY,{}).get('deferred_decisions',{}))
+                wait_for(lambda value:pending['decision_id'] in self.state().get('deferred_decisions',{}))
                 self.assertEqual(self.state()['status'],'paused')
                 runner.resume(self.checkpoint)
                 wait_for(lambda value:value.get('status') == 'needs_input' and value.get('pending_input',{}).get('question') == 'await cancel')
@@ -665,7 +695,7 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
                 owner_thread.join(5)
         self.assertEqual(errors,[])
         self.assertEqual(owner_results,[0])
-        self.assertEqual(progress.read_record(self.checkpoint)['status'],'cancelled')
+        self.assertEqual(runner._read_checkpoint(self.checkpoint, projection='identity')['status'],'cancelled')
         self.assertEqual([action['payload']['ref'] for action in continuations],['native:designer'])
         events = [json.loads(line) for line in log.read_text().splitlines()]
         self.assertEqual(sum(event['event'] == 'spawn' for event in events),1)
@@ -694,15 +724,16 @@ class ForegroundLifecycleTests(scenario.ProgressTests):
                 self.invoke('observe', self.observation())
                 self.invoke('pause')
                 thread = host.start_carrier('stage2',{'model':'fixture-model','reasoning_effort':'high'})
-                saved = progress.read_record(self.checkpoint)
+                saved = runner._read_checkpoint(self.checkpoint, projection='identity')
                 saved.update(current_stage='stage2',sessions={'stage2':thread},
                     transport={'instance':host.instance,'state':'live','native_event_sequence':0})
-                progress.atomic_save(self.checkpoint,saved)
+                progress.save_outer_record(self.checkpoint, {key: value for key, value in saved.items() if key != progress.KEY},
+                    expected_revision=saved.authority_revision)
                 self.assertEqual(self.invoke('observe',self.observation('stopped','result'))['status'],'paused')
-                runner._live_progress(progress.read_record(self.checkpoint),self.checkpoint,host,set())
+                runner._live_progress(runner._read_checkpoint(self.checkpoint, projection='identity'),self.checkpoint,host,set())
                 self.assertEqual(self.state()['status'],'pausing')
                 self.assertFalse(self.state()['stopped'])
-                self.assertIn('archive query failed',progress.read_record(self.checkpoint)['transport']['lookup_blocked'])
+                self.assertIn('archive query failed',runner._read_checkpoint(self.checkpoint, projection='identity')['transport']['lookup_blocked'])
         finally:
             host.close()
 
@@ -757,8 +788,18 @@ class HostProtocolTests(unittest.TestCase):
         result = {'answers':{'question':{'answers':['x' * (128 * 1024)]}}}
         decision = {'decision_id':pending['decision_id'],'subject':pending['subject'],
                     'answer':json.dumps(result),'reference':'controller-answer:'+pending['decision_id']}
-        state = {'version':10,'status':'needs_input','current_stage':'stage2',
-                 'transport':{'instance':self.host.instance,'server_decision':decision}}
+        owner = ForegroundLifecycleTests(methodName='runTest')
+        owner.setUp(); self.addCleanup(owner.doCleanups)
+        _, _, confirmed_path = owner.fixture()
+        raw = json.loads(confirmed_path.read_text())
+        raw['run_record'] = str(checkpoint)
+        registry_input = self.root / 'pipe-confirmed.json'
+        registry_input.write_text(json.dumps(raw))
+        raw['registry_input'] = str(registry_input)
+        with patch.object(runner, '__file__', str(cli.SCRIPT)):
+            state = runner._new_state(runner.validate_confirmed(raw))
+        state.update(status='needs_input', pending_input=pending,
+                     transport={'instance':self.host.instance,'server_decision':decision})
         progress.atomic_save(checkpoint,state)
         return checkpoint, state, request, result
 

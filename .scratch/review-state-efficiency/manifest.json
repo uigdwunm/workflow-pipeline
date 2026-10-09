@@ -3649,6 +3649,21 @@
         "patch_sha256": "e13f05f2a45cbceb8d308bf4fe910f9ad193fd6af3800689df144f3dfcbbdb35",
         "commands": "t06-final-owner-fixtures/command-index.md",
         "result": "8 exact original test paths/AST methods/modes/49457B patch and archived source copies verified; author final49 related original tests PASS incl Publication17 original failed IDs. No runtime/shared/package changes, immutable original reviewer increment pending. Remaining native4/full gate unchanged."
+      },
+      "final_native_fixture_result": {
+        "source_base": "723cb94089de0eae5f123fb7eb36cce5962df35a",
+        "source_snapshot": "t06-final-native-fixtures/candidate-source.json",
+        "source_snapshot_sha256": "5ca9b0be72d95ce27ad3636898f436b7ff48e1e508ae37b6c1f1696cbb7014df",
+        "patch_sha256": "62a2514c9a4cf76160de5b0f48d1535bc0bdc9c879956cce3b5ac88bab71484a",
+        "commands": "t06-final-native-fixtures/index.json",
+        "targets": "t06-final-native-fixtures/original-failed-targets.json",
+        "result": "4 exact original tests frozen; original AST IDs/bases/load_tests unchanged (70/31/8/137), runtime/shared/packages unchanged. Targeted source/authority/pipe/live/second-recovery/overflow goals PASS; original23/26 mixed failures retain original SHA and precise reuse limits. 43 commands retained, writer/runner stopped. Independent increment and exact-candidate complete gate pending; original full02 remains failed."
+      },
+      "final_increment_reviews": {
+        "runtime": "t06-final-runtime/independent-review-5e81a9f.md: Standards0/localSpecnew0; dd11 original owner-source P2 and ec original fixture P2 CLOSED",
+        "owner": "t06-final-owner-fixtures/independent-review-723cb94.md: Standardsnew0/localSpecnew0, source applicability bounded",
+        "native": "pending immutable four-test increment; no full/native/efficiency PASS",
+        "delivery": "reuse original two delivery axes for only uncovered increment; final complete gate mandatory before local delivery"
       }
     }
   }
