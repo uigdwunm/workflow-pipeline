@@ -3725,6 +3725,26 @@
         "unknown": "unaccepted lease release cause and legitimate not-created public retry must reach actual legal baseline before judging runtime. Runtime/shared helpers/pkg/runner remain readonly, report exact source cause before any production change.",
         "evidence": "t06-final-diagnosis/full05-dispatch-recovery-7a/{receipt.json,17.json,17.log,readonly-diagnosis.md}",
         "validation": "Use existing runner, whole original13-test module after shared producer fix; original failing short feedback for genuinely new cause; no second runner/full during fixture repair. Freeze source and original incremental review, then final complete gate."
+      },
+      "final_dispatch_fixture_result": {
+        "source_base": "1aa691b2eb015222d65e04ca801d2cb0d32400c0",
+        "snapshot": "t06-final-dispatch-fix/source-snapshot.json",
+        "snapshot_sha256": "ef01096175524c32f2ee2f640a576a7d240c014eff60fc5326aee54ffb5024f3",
+        "patch_sha256": "1e72493c57ad712d2cb9141d20ad3d476a5a4e050d3fbeeb457dd40dd7ef9623",
+        "source_sha256": "af8a30a1daa9527bbde2ff1bc9d3fa088a8fac3f8ea66f8ce32521a3ea2f1b54",
+        "commands": "t06-final-dispatch-fix/index.json",
+        "result": "Whole original13 tests12PASS/1FAIL/0E106.63s; original inventory unchanged. Correct unique census/finite outerCAS/real commit fault/exactACK/currentlease target valid; sole remaining real source failure original same-intent not-created retry swallowed by old cachedreceipt. Original outcome and failed target retained, no fullPASS."
+      },
+      "final_not_created_runtime_scope": {
+        "author": "original G1 sole writer/runner after freeze, root planning/Git owner",
+        "source_paths": [
+          "src/shared/scripts/workflow_progress.py",
+          "tests/runtime/test_dispatch_recovery.py"
+        ],
+        "runtime_boundary": "Progress.control_action existing derived_not_created handling must be applied to the original saved verified not-created outcome before cached receipt resolution. Bind legitimate retry to its original intent/outcome so its logical receipt stays immutable and exact replays cannot recreate. Preserve original older receipt membership; do not merely skip cache then overwrite same key.",
+        "constraints": "Only original dispatch-recovery-intent/verified not-created exception; unknown/created/active/new/foreign/stale/pause/cancel/stop/identity/attempt/configuration/lease/hash/CAS and all general exactACK guards retained. No caller flags/new API/route/schema/cap/readbudget/legacy migration.",
+        "generated": "Same existing canonical workflow_progress copies and five package digests regenerated through original builder only; existing mapping unchanged.",
+        "tests": "Original valid failing public same-intent test is regression; preserve13 IDs and add necessary genuine replay/outcome/proof guards at same seam. Whole13 plus directly affected design/native exactACK neighbors, originalincrementreview then completefinalgate."
       }
     }
   }

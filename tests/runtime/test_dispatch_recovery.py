@@ -49,6 +49,30 @@ class DispatchRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.f = RecoveryFixture(methodName='runTest'); self.f.setUp(); self.addCleanup(self.f.doCleanups)
 
+    def assert_original_intent_ack(self, request):
+        before = self.f.checkpoint.read_bytes()
+        with patch.object(dispatch, 'checkpoint', side_effect=AssertionError('exact ACK redispatched control')):
+            result = self.f.invoke('control', request)
+        self.assertTrue(result['acknowledged'], result)
+        self.assertEqual(result['next_action']['operation'], 'control-effects', result)
+        self.assertEqual(result['next_action']['result']['effects'], [])
+        self.assertIs(result['next_action']['write_authority'], False)
+        self.assertEqual(self.f.checkpoint.read_bytes(), before)
+
+    def fresh_replacement_census(self):
+        import workflow_progress as progress
+        f = self.f
+        snapshot = f.observation('stopped', 'result', ref='native:dispatcher')['lifecycle']
+        identities = [item['id'] for page in snapshot['pages'] for item in page['response']['data']]
+        self.assertEqual(len(identities), len(set(identities)))
+        owner = progress.Progress(f.checkpoint, progress.read_active_owner(f.checkpoint))
+        self.assertEqual(set(identities), owner.native_refs() | {'native:replacement'})
+        result = f.invoke('lifecycle-state', snapshot)
+        self.assertNotEqual(result['status'], 'blocked', result)
+        owner = progress.Progress(f.checkpoint, progress.read_active_owner(f.checkpoint))
+        self.assertEqual(owner.stop_barrier_pending(), [])
+        self.assertEqual(owner.state['host']['status'], 'stopped')
+
     def recovery_intent(self, *, accept=True, committed=False):
         request = self.prepare_mixed(accept=accept)
         if committed:
@@ -73,9 +97,7 @@ class DispatchRecoveryTests(unittest.TestCase):
         prepared, identity, request = self.recovery_intent(accept=accept, committed=committed)
         intent = self.f.invoke('control',request)['next_action']['request']
         self.replacement_response(prepared,intent,'ready','ready-response')
-        snapshot = self.f.observation('stopped','result',ref='native:dispatcher')['lifecycle']
-        snapshot['pages'][0]['response']['data'].append({'id':'native:replacement','status':{'type':'idle'}})
-        self.f.invoke('lifecycle-state',snapshot)
+        self.fresh_replacement_census()
         return {'action':'recover-dispatch','evidence':{**identity,'replacement_ref':'native:replacement'},
                 'receipt':request['receipt']}
 
@@ -159,7 +181,8 @@ class DispatchRecoveryTests(unittest.TestCase):
                    'receipt':{'controller_ref':'task','reference':decision['reference']}}
         issued = f.invoke('control', request)
         self.assertEqual(issued['next_action']['operation'], 'invoke-recovery-host', issued)
-        self.assertEqual(f.invoke('control', request)['next_action']['operation'], 'lookup-recovery-host')
+        self.assert_original_intent_ack(request)
+        self.assertEqual(f.invoke('advance')['next_action']['operation'], 'lookup-recovery-host')
         intent = issued['next_action']['request']
         ready = {'adapter':'fixture-native','call_ref':'replacement-call','response_ref':'replacement-response',
                  'intent_id':intent['intent_id'],'status':'ready','ref':'native:replacement',
@@ -167,9 +190,7 @@ class DispatchRecoveryTests(unittest.TestCase):
         observed = f.invoke('control', {'action':'dispatch-recovery-result','evidence':{'recovery_id':prepared['recovery_id'],'receipt':ready},
                                       'receipt':ready})
         self.assertEqual(f.state()['control']['context']['carrier']['ref'], 'native:dispatcher')
-        snapshot = f.observation('stopped','result',ref='native:dispatcher')['lifecycle']
-        snapshot['pages'][0]['response']['data'].append({'id':'native:replacement','status':{'type':'idle'}})
-        f.invoke('lifecycle-state', snapshot)
+        self.fresh_replacement_census()
         activated = f.invoke('control', {'action':'recover-dispatch','evidence':{**identity,'replacement_ref':'native:replacement'},
                                        'receipt':{'controller_ref':'task','reference':decision['reference']}})
         self.assertEqual(f.state()['control']['context']['carrier']['ref'], 'native:replacement', activated)
@@ -213,20 +234,24 @@ class DispatchRecoveryTests(unittest.TestCase):
         self.replacement_response(prepared,first['request'],'unknown','unknown-response')
         for operation in ('advance','resume'):
             self.assertEqual(f.invoke(operation)['next_action']['operation'],'lookup-recovery-host')
-        self.assertEqual(f.invoke('control',request)['next_action']['operation'],'lookup-recovery-host')
+        self.assert_original_intent_ack(request)
+        self.assertEqual(f.invoke('advance')['next_action']['operation'], 'lookup-recovery-host')
         self.replacement_response(prepared,first['request'],'not-created','not-created-response')
         retried = f.invoke('control',request)['next_action']
-        self.assertEqual(retried['operation'],'invoke-recovery-host',retried)
+        recovery = f.state()['control']['context']['handoff_progress']['recovery']
+        self.assertEqual(retried['operation'], 'invoke-recovery-host', {
+            'actual': retried, 'original_request': request,
+            'saved_recovery': {key: recovery[key] for key in (
+                'state', 'recovery_id', 'snapshot_digest', 'intent', 'decision', 'receipts')}})
         self.assertEqual(first['request'],retried['request'])
-        self.assertEqual(f.invoke('control',request)['next_action']['operation'],'lookup-recovery-host')
+        self.assert_original_intent_ack(request)
+        self.assertEqual(f.invoke('advance')['next_action']['operation'], 'lookup-recovery-host')
 
     def test_original_creation_receipt_is_retained_after_host_loss_without_activation(self):
         prepared, _, request = self.recovery_intent(); f = self.f
         intent = f.invoke('control',request)['next_action']['request']
         import workflow_progress as progress
-        outer = progress.read_record(f.checkpoint)
-        outer['transport'] = {'instance':'fixture-host','state':'lost','native_event_sequence':0}
-        progress.atomic_save(f.checkpoint,outer)
+        f.save_transport(instance=f.state()['native_host']['instance'], state='lost', native_event_sequence=0)
         f.invoke('transport-lost',{'instance':'fixture-host','reason':'owner lost after native call'})
         result = self.replacement_response(prepared,intent,'ready','late-original-response')
         self.assertEqual(f.state()['control']['context']['handoff_progress']['recovery']['state'],'ready',result.get('error'))
@@ -255,14 +280,19 @@ class DispatchRecoveryTests(unittest.TestCase):
     def test_activation_save_interruption_replays_original_control_not_creation(self):
         request = self.ready_replacement(); f = self.f
         import workflow_progress as progress
-        save = progress.atomic_save
-        def interrupt(path, value):
-            recovery = value[progress.KEY]['control']['context']['handoff_progress'].get('recovery')
+        commit = progress.state_store.StateStore.commit_current
+        interrupted = []
+        def interrupt(owner, **candidate):
+            subject = candidate['subjects'][candidate['metadata']['stage_subject']]
+            recovery = subject['control']['context']['handoff_progress'].get('recovery')
             if recovery and recovery['state'] == 'activated':
+                self.assertEqual(subject['control']['context']['carrier']['ref'], 'native:replacement')
+                interrupted.append(recovery['recovery_id'])
                 raise KeyboardInterrupt()
-            return save(path,value)
-        with patch.object(progress,'atomic_save',side_effect=interrupt):
+            return commit(owner, **candidate)
+        with patch.object(progress.state_store.StateStore, 'commit_current', interrupt):
             with self.assertRaises(KeyboardInterrupt): f.invoke('control',request)
+        self.assertEqual(interrupted, [request['evidence']['recovery_id']])
         self.assertEqual(f.state()['control']['context']['carrier']['ref'],'native:dispatcher')
         f.invoke('resume')
         self.assertEqual(f.state()['control']['context']['carrier']['ref'],'native:replacement')
@@ -274,16 +304,27 @@ class DispatchRecoveryTests(unittest.TestCase):
         original_baseline = f.state()['handoff']['scope']['baseline']
         retained_commit = f.flow_git('rev-parse', 'HEAD')
         self.assertNotEqual(retained_commit, original_baseline)
-        f.invoke('control',request)
+        activated = f.invoke('control', request)
+        self.assertEqual(f.state()['control']['context']['carrier']['ref'], 'native:replacement', activated)
         progress = f.state()['control']['context']['handoff_progress']
+        self.assertEqual(progress['recovery']['state'], 'activated', activated)
         self.assertEqual(progress['recovery']['revalidate'],['native:executor'])
         self.assertEqual(progress['executions'][0]['state'],'received')
         release = {'action':'release-recovery-allocation','evidence':{
             'recovery_id':progress['recovery']['recovery_id'],'snapshot_digest':progress['recovery']['snapshot_digest'],
             'agent_ref':'native:executor','reference':'controller:assume-unaccepted'},
             'receipt':{'controller_ref':'task','reference':'controller:assume-unaccepted'}}
-        result = f.invoke('control',release)
-        self.assertEqual(f.state()['control']['context']['handoff_progress']['executions'][0]['state'],'cancelled',result)
+        import workflow_progress as owner_progress
+        original_block = owner_progress.Progress.block
+        primary_errors = []
+        def capture_error(owner, error):
+            primary_errors.append({'type': type(error).__name__, 'code': getattr(error, 'code', None),
+                                   'message': str(error)})
+            return original_block(owner, error)
+        with patch.object(owner_progress.Progress, 'block', capture_error):
+            result = f.invoke('control', release)
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['executions'][0]['state'],
+                         'cancelled', {'result': result, 'primary_errors': primary_errors})
         self.assertTrue(f.invoke('control',release)['acknowledged'])
         self.assertEqual((f.flow/'impl.py').read_text(),'accepted bytes\n')
         execution = f.execution_input()

@@ -179,6 +179,14 @@ G4 恢复链的已确认增量：原命令 32 暴露只读 Git 计划投影被�
 
 原完整runner已退出、原锁无holder，才能交源码writer。共同producer修后直接跑原13项完整模块，避免只证明一两个入口而遗漏同helper分支；新原因先最短真实反馈。原reviewer只核冻结增量，其他有效证据不重审。最终新候选仍需完整validate，运行前完成必要规划并冻结，原全量事实继续由外部唯一管理与实际回执保存；不新增机制、放宽预算或删除失败模块。
 
+### 合法not-created重试的已证生产边界
+
+唯一派发fixture批已冻结：原13项12PASS/1FAIL/0ERROR，106.63秒。唯一源test_dispatch_recovery.py，62+/21−、13原IDs/继承/load_tests不变；源SHA `af8a30a1daa9527bbde2ff1bc9d3fa088a8fac3f8ea66f8ce32521a3ea2f1b54`、patch `1e72493c57ad712d2cb9141d20ad3d476a5a4e050d3fbeeb457dd40dd7ef9623`，证据`t06-final-dispatch-fix/index.json`。合法旧writer屏障、实际bounded fault、outer host loss、真实unaccepted释放与后继allocation完整目标均已到达。
+
+现唯一FAIL是合法原公共C重试：当前recovery为not-created，原unknown/not-created回执绑定同intent且ref=None/write_authority=False；原decision/request相同。Progress.control_action在原immutable receipt lookup早退为旧dispatch-pending ACK，后面的既有derived_not_created分支不可达。只修这个既有original intent/outcome→logical receipt边界：已验证not-created事实必须在缓存解析前参与原重试身份，旧membership仍不可改，同一新重试重放不能再创建；不能仅跳过cache后用同key覆盖原receipt。unknown、已创建、foreign/stale、停止、身份、配置、lease、CAS门禁与通用exactACK不变，不新增caller flag/API/schema/限额或旧运行迁移。
+
+同一原作者在唯一源码入口workflow_progress及原13测试做最小修复，必要相同原canonical与五包digest用原builder同步；其他源保持只读。原真实FAIL即回归反馈，补同边界必要重放/旧proof不变与负例，保持原13IDs。整13、实际受影响design/native ACK邻居、唯一原增量审查后，最终候选仍完整验证；原全量和本批FAIL不重标。
+
 ## 验证与限制
 
 V01：所有仓库测试只经 `scripts/run_tests.py`，最终 `scripts/validate.sh`。若 runner 报已有运行，报告 owner 并结束该次验证，不绕锁。
