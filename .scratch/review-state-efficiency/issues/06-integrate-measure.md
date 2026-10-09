@@ -171,6 +171,14 @@ G4 恢复链的已确认增量：原命令 32 暴露只读 Git 计划投影被�
 
 `t06-short-plan-fix/index.json` 记录实际argv/head/15输入SHA/起止/exit/log；源码快照SHA256 `33e40ba6adc5922006fd112f072240fb023d5c66b594f2433b1a774e4aec332e`、patch `22b281a616075b524c2670b1178f0804b483d562bbbf946d6d070750473a9cad`，原作者与runner均已退出。接下来仅固定此增量交原reviewer核对并暂停，实际审查结论写已有外部唯一管理记录；不启动完整validate，不合入main，不安装或部署。最后全量在后续用户明确授权的连续窗口运行，候选期间保持不变；原full02失败/full03中断继续保留。
 
+### 最终7a全量的唯一失败范围
+
+原 full05 已正常结束：固定 `7a18595`、exit1、9023.613秒，625源输入前后相同；60模块59PASS/1FAIL，1424tests／5failure／1error／1skip。预算137项整模块通过。唯一失败是原dispatch_recovery的13项模块，原worker17.json/17.log与只读诊断保存于 `t06-final-diagnosis/full05-dispatch-recovery-7a`；不重标原失败。
+
+接下来复用原G1，仅原test_dispatch_recovery.py修已证明的测试producer：原observation已经带ready身份，手工追加造成duplicate并被正确拒；改用原完整唯一census并确认原stop barrier成功。原transport必须通过finite outer CAS；原exact control intent重放应ACK且无effects，真正lookup仍用原公开推进；中断挂实际bounded activated commit。必须保原独立duplicate/source/oldwriter/unknown/index/content/deletion拒绝，原unaccepted allocation执行权释放和not-created后同intent重试目标不能删。后二者尚未有合法基线动态结果，不判断为runtime缺陷；生产脚本、共享helper及包保持只读，真实源因另按原边界登记。
+
+原完整runner已退出、原锁无holder，才能交源码writer。共同producer修后直接跑原13项完整模块，避免只证明一两个入口而遗漏同helper分支；新原因先最短真实反馈。原reviewer只核冻结增量，其他有效证据不重审。最终新候选仍需完整validate，运行前完成必要规划并冻结，原全量事实继续由外部唯一管理与实际回执保存；不新增机制、放宽预算或删除失败模块。
+
 ## 验证与限制
 
 V01：所有仓库测试只经 `scripts/run_tests.py`，最终 `scripts/validate.sh`。若 runner 报已有运行，报告 owner 并结束该次验证，不绕锁。

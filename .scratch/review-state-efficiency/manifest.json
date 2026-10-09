@@ -3696,6 +3696,35 @@
         "patch_sha256": "22b281a616075b524c2670b1178f0804b483d562bbbf946d6d070750473a9cad",
         "evidence": "t06-short-plan-fix/index.json",
         "result": "Only one original test source1+/1-,46original AST IDs/bases/load_tests unchanged; actual --match final_integration selects2 original failing cases, exit0/2tests0F0E0skip557.015s with original full recovery/protected guards. Runtime/helper/package/runner unchanged; source/runner frozen. Original immutable increment review pending; full03 interrupted and full02failed remain original facts."
+      },
+      "final_gate_7a": {
+        "candidate": "7a185954fa30d37f577726c5179676f716351f52",
+        "receipt": "t06-full/05-full-validation.receipt.json",
+        "status": "failed; not PASS",
+        "exit": 1,
+        "seconds": 9023.613186667,
+        "source_files": 625,
+        "input_unchanged": true,
+        "modules": 60,
+        "passed_modules": 59,
+        "failed_modules": 1,
+        "tests": 1424,
+        "failures": 5,
+        "errors": 1,
+        "skipped": 1,
+        "failed_path": "tests/runtime/test_dispatch_recovery.py",
+        "diagnosis": "t06-final-diagnosis/full05-dispatch-recovery-7a/readonly-diagnosis.md",
+        "rule": "Original failure retained. Only demonstrated original producer/consumer seam repair; final new unchanged-candidate complete gate mandatory."
+      },
+      "final_dispatch_fixture_scope": {
+        "author": "original G1, sole writer/runner after full05 exits and lock released",
+        "source_paths": [
+          "tests/runtime/test_dispatch_recovery.py"
+        ],
+        "operation": "Original finite transport outer CAS; unique actual ready census and fresh old-writer stop barrier; exact original control intent ACK no effects and separate real lookup; actual bounded activation commit fault. Preserve all original IDs, identity/provenance/source/stop/unknown/candidate/index/content/deletion/lease/same-intent retry guards.",
+        "unknown": "unaccepted lease release cause and legitimate not-created public retry must reach actual legal baseline before judging runtime. Runtime/shared helpers/pkg/runner remain readonly, report exact source cause before any production change.",
+        "evidence": "t06-final-diagnosis/full05-dispatch-recovery-7a/{receipt.json,17.json,17.log,readonly-diagnosis.md}",
+        "validation": "Use existing runner, whole original13-test module after shared producer fix; original failing short feedback for genuinely new cause; no second runner/full during fixture repair. Freeze source and original incremental review, then final complete gate."
       }
     }
   }
