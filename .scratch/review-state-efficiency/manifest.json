@@ -3664,6 +3664,38 @@
         "owner": "t06-final-owner-fixtures/independent-review-723cb94.md: Standardsnew0/localSpecnew0, source applicability bounded",
         "native": "pending immutable four-test increment; no full/native/efficiency PASS",
         "delivery": "reuse original two delivery axes for only uncovered increment; final complete gate mandatory before local delivery"
+      },
+      "final_gate_d4": {
+        "candidate": "d4aeab37a97e81ecdea9831b13d18ad2d1206289",
+        "receipt": "t06-full/03-full-validation.receipt.json",
+        "pause_receipt": "t06-full/pause03-stop.receipt.json",
+        "status": "interrupted on explicit human pause; not PASS",
+        "exit": 130,
+        "seconds": 3074.047418667,
+        "source_files": 625,
+        "input_unchanged": true,
+        "completed_modules": 6,
+        "passed_modules": 5,
+        "failed_modules": 1,
+        "observed_failure": "Original plan revision46tests2failures, accepted reader bytes not flushed before v2; original stdout/worker/diagnosis retained."
+      },
+      "short_closure_scope": {
+        "authority": "human 可以，按你说的做吧 to short closure then pause, full validation not authorized now",
+        "source_paths": [
+          "tests/runtime/test_plan_revision_progress.py"
+        ],
+        "operation": "original v1 accepted-byte Ticket check before revision; remove direct debug print only, retain sampling/capacity assertions/metrics",
+        "completion": "original2 full targeted cases, immutable increment review, clean committed freeze then pause",
+        "full_gate": "paused; no complete validation or main integration"
+      },
+      "final_short_fixture_result": {
+        "source_base": "d4aeab37a97e81ecdea9831b13d18ad2d1206289",
+        "source_snapshot": "t06-short-plan-fix/source-snapshot.json",
+        "source_snapshot_sha256": "33e40ba6adc5922006fd112f072240fb023d5c66b594f2433b1a774e4aec332e",
+        "source_sha256": "9b0f924967af4ad6b5d859bbc8290ed1ec5152e3180cc0a5a12760d65fb67f98",
+        "patch_sha256": "22b281a616075b524c2670b1178f0804b483d562bbbf946d6d070750473a9cad",
+        "evidence": "t06-short-plan-fix/index.json",
+        "result": "Only one original test source1+/1-,46original AST IDs/bases/load_tests unchanged; actual --match final_integration selects2 original failing cases, exit0/2tests0F0E0skip557.015s with original full recovery/protected guards. Runtime/helper/package/runner unchanged; source/runner frozen. Original immutable increment review pending; full03 interrupted and full02failed remain original facts."
       }
     }
   }

@@ -294,7 +294,6 @@ class PlanRevisionProgressTests(unittest.TestCase):
                         'before_progress_fields': fields(previous['control']['context']['handoff_progress']),
                         'candidate_progress_fields': fields(value['control']['context']['handoff_progress'])}
                     measured.append(row)
-                    print('T04_CAPACITY_ACTUAL ' + json.dumps(row, sort_keys=True))
             return original_commit(owner, **kwargs)
         with patch.object(progress.state_store.StateStore, 'commit_current', observe_capacity):
             if reference_fault:
@@ -1505,6 +1504,7 @@ class PlanRevisionProgressTests(unittest.TestCase):
             self.accept_planned_step(flow, ticket_record, identity, relative,
                 ("def " + relative.removesuffix(".py") + "():\n    return 1\n").encode(),
                 "accepted-" + identity)
+        self.check_due_fixture_tickets(flow)
         report = self.report(flow)
         report["report"].update(step_ids=["FP1-02"],
             dependency_impact=["FP1-02", "FP1-04", "FP1-05"],

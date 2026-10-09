@@ -163,6 +163,14 @@ G4 恢复链的已确认增量：原命令 32 暴露只读 Git 计划投影被�
 
 运行时固定 `5e81a9f` 和 owner 固定 `723cb94` 的原独立审查均为 Standards0／localSpec新0；前者已关闭 dd11／ec 两项原 P2。下一步只有四测试固定增量审查、原交付两轴未覆盖增量与最终完整 gate；不重新审已有效 Ticket 证据、不新增机制。原 full02 的失败和 full01 的中断保持原候选与输出，最终候选须 clean 且全量运行前后输入相同。最终验证事实写入已有外部唯一管理记录与命令回执，不为结果再改动候选源文件。
 
+### 本次短收尾，完整验证保持暂停
+
+用户确认只执行短收尾并停在干净候选。原 full03 固定 `d4aeab3` 在用户要求暂停时正常中断，exit130、3074.047秒，625源输入前后相同；完成6模块5PASS/1FAIL。原计划修订模块46tests中的两FAIL保留原worker/log与只读诊断，不能改标全量通过。
+
+唯一测试源改动为 `test_plan_revision_progress.py` 的1+/1−：初始五个v1真实 public accept 后、生成修订report前调用原 Ticket check，让reader已验收bytes在原authority下被原fingerprint/receipt验证并提交，再进入v2；未扩大accepted集合或删断言。仅移除直接T04调试print，保measured、容量断言及原metrics。原两final_integration用例以同一次 runner筛选完整通过，2tests／0failure／0error／0skip、557.015秒，后半实际恢复、最终快照与保护检查均到达。46个原test IDs、继承及load_tests不变，runtime/helper/包/runner未改。
+
+`t06-short-plan-fix/index.json` 记录实际argv/head/15输入SHA/起止/exit/log；源码快照SHA256 `33e40ba6adc5922006fd112f072240fb023d5c66b594f2433b1a774e4aec332e`、patch `22b281a616075b524c2670b1178f0804b483d562bbbf946d6d070750473a9cad`，原作者与runner均已退出。接下来仅固定此增量交原reviewer核对并暂停，实际审查结论写已有外部唯一管理记录；不启动完整validate，不合入main，不安装或部署。最后全量在后续用户明确授权的连续窗口运行，候选期间保持不变；原full02失败/full03中断继续保留。
+
 ## 验证与限制
 
 V01：所有仓库测试只经 `scripts/run_tests.py`，最终 `scripts/validate.sh`。若 runner 报已有运行，报告 owner 并结束该次验证，不绕锁。
