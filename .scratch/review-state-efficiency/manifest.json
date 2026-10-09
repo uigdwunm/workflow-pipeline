@@ -3745,6 +3745,16 @@
         "constraints": "Only original dispatch-recovery-intent/verified not-created exception; unknown/created/active/new/foreign/stale/pause/cancel/stop/identity/attempt/configuration/lease/hash/CAS and all general exactACK guards retained. No caller flags/new API/route/schema/cap/readbudget/legacy migration.",
         "generated": "Same existing canonical workflow_progress copies and five package digests regenerated through original builder only; existing mapping unchanged.",
         "tests": "Original valid failing public same-intent test is regression; preserve13 IDs and add necessary genuine replay/outcome/proof guards at same seam. Whole13 plus directly affected design/native exactACK neighbors, originalincrementreview then completefinalgate."
+      },
+      "final_not_created_runtime_result": {
+        "source_base": "fab1a3a8d4a1ce47b44445e40717423fa6b2e8b4",
+        "source_snapshot": "t06-final-not-created-runtime/source-snapshot.json",
+        "source_snapshot_sha256": "e0a360eaa12ffd50fe71b3fa79a73b6fffe2d31b135f5be7af92d057ff2321d7",
+        "patch_sha256": "df3e5089dd4d30302778f3c6e137902fd377fd958310eab0d210814dc48572da",
+        "runtime_sha256": "0fda7ac8225ebd34202486386cc8905c961e63be0cff87863d9684649be868ed",
+        "test_sha256": "6fc5e462fc1f45d775de477c2011529ba4891835831bc588ce51850d5fdce6f1",
+        "evidence": "t06-final-not-created-runtime/index.json",
+        "result": "Exact12 paths: progress11lines plus originaltest69lines, same5canonical/fivepkgdigests. Original same-intent selector PASS11.25s,13module PASS128.04s,Design8 PASS41.95s,nativeACKneighbor PASS22.27s; builder/check/diff PASS. Actual retry/replay/unknown/second-not-created/oldproof byte preservation/foreign/callerclaim/pause/cancel guards verified; original13inventory unchanged. Runtime current verified outcome binds logical receipt before cache and later prepare, no oldmembership rewrite/newAPI/cap. Source/runner frozen; original immutable increment review and final newcandidate full gate pending."
       }
     }
   }

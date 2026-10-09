@@ -187,6 +187,14 @@ G4 恢复链的已确认增量：原命令 32 暴露只读 Git 计划投影被�
 
 同一原作者在唯一源码入口workflow_progress及原13测试做最小修复，必要相同原canonical与五包digest用原builder同步；其他源保持只读。原真实FAIL即回归反馈，补同边界必要重放/旧proof不变与负例，保持原13IDs。整13、实际受影响design/native ACK邻居、唯一原增量审查后，最终候选仍完整验证；原全量和本批FAIL不重标。
 
+### 已冻结的原重试生产修复
+
+本批仅12授权路径：workflow_progress的11行，在原缓存查找前以当前已保存、绑定原intent且ref=None的not-created回执确定logical invocation，同变量用于后续membership；旧key/proof保持不可变。原test_dispatch_recovery增加69行真实分支断言，13个原IDs/继承/load_tests不变；同源5份canonical与五包digest由原builder同步，mapping/API/compatibility/schema/限额不变。
+
+原失败selector PASS11.25秒，原13整模块PASS128.04秒，原Design8项PASS41.95秒，native release/exactACK邻居PASS22.27秒；builder同步、build --check、diffcheck均通过。实际覆盖两轮not-created后同intent重试、pending/unknown后的exactACK无dispatch/无checkpoint写、旧not-created重放不回退current、旧receipt/marker逐字节不变、foreign actor以及caller自报outcome/pause/cancel无effects；并非只修改期待值。原全量及fixture失败保持原结果。
+
+`t06-final-not-created-runtime/index.json` 9,109B与source-snapshot 9,004B记录原HEAD/输入/argv/time/exit/完整日志及12源指纹。snapshot SHA256 `e0a360eaa12ffd50fe71b3fa79a73b6fffe2d31b135f5be7af92d057ff2321d7`，patch `df3e5089dd4d30302778f3c6e137902fd377fd958310eab0d210814dc48572da`。原作者与runner已退出，root精确核对源/patch/readonly依赖/冻结需求；下一步唯一原incrementreview与最终新候选完整gate，不再追加实现范围。完整结果写已有外部唯一管理/回执，不在运行期间改源或为结果追加候选commit。native现场/安全/效率仍不宣称通过。
+
 ## 验证与限制
 
 V01：所有仓库测试只经 `scripts/run_tests.py`，最终 `scripts/validate.sh`。若 runner 报已有运行，报告 owner 并结束该次验证，不绕锁。

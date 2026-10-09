@@ -6905,6 +6905,17 @@ class Progress:
                       data['receipt'].get('reference') or data['receipt'].get('call_ref') or
                       data['receipt'].get('operation_id') or entry.digest(data['receipt']))
         control_subject = self.control_receipt_subject(data)
+        if data['action'] == 'dispatch-recovery-intent':
+            recovery = (self.state['control']['context'].get('handoff_progress') or {}).get('recovery')
+            if recovery and recovery.get('intent'):
+                outcome = next((receipt for receipt in reversed(recovery['receipts'])
+                                if receipt['status'] == 'not-created'), None)
+                if outcome is not None:
+                    require(outcome['intent_id'] == recovery['intent']['intent_id'] and outcome['ref'] is None,
+                            'identity_mismatch', 'retry must retain the original not-created outcome')
+                    # The original receipt stays immutable. This outcome names
+                    # one retry, including its exact replay after pending/unknown.
+                    invocation = entry.digest([invocation, recovery['intent']['intent_id'], outcome])
         receipt_store, receipt_current, receipt_key = self.receipt_store(
             'control:' + data['action'], control_subject, invocation)
         cached_receipt = receipt_store.read_receipt(receipt_current, receipt_key, original_input)

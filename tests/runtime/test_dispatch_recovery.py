@@ -226,11 +226,52 @@ class DispatchRecoveryTests(unittest.TestCase):
         rejected = f.invoke('control', wrong)
         self.assertEqual(rejected['status'], 'blocked', rejected)
         self.assertIsNone(f.state()['control']['context']['handoff_progress'].get('recovery'))
+        original_fixture = self.f
+        for refusal in ('caller-claimed-outcome', 'pause', 'cancel'):
+            with self.subTest(refusal=refusal):
+                flow = RecoveryFixture(methodName='runTest')
+                flow.setUp()
+                try:
+                    self.f = flow
+                    prepared, _, request = self.recovery_intent()
+                    intent = flow.invoke('control', request)['next_action']['request']
+                    outcome = 'unknown' if refusal == 'caller-claimed-outcome' else 'not-created'
+                    self.replacement_response(prepared, intent, outcome, 'outcome-' + refusal)
+                    expected_recovery = copy.deepcopy(flow.state()['control']['context']['handoff_progress']['recovery'])
+                    if refusal == 'caller-claimed-outcome':
+                        request['receipt']['derived_not_created'] = 'caller-claimed-not-created'
+                        with patch.object(dispatch, 'checkpoint', side_effect=AssertionError('claimed retry dispatched')):
+                            rejected = flow.invoke('control', request)
+                        self.assertEqual(rejected['error']['code'], 'receipt_conflict', rejected)
+                    else:
+                        flow.invoke(refusal)
+                        before = flow.checkpoint.read_bytes()
+                        import entry_prepare
+                        with patch.object(dispatch, 'checkpoint', side_effect=AssertionError('stopped retry dispatched')):
+                            with self.assertRaises(entry_prepare.PreparationError) as error:
+                                flow.invoke('control', request)
+                        self.assertEqual(error.exception.code, 'progression_suspended')
+                        self.assertEqual(flow.checkpoint.read_bytes(), before)
+                    self.assertEqual(flow.state()['control']['context']['handoff_progress']['recovery'], expected_recovery)
+                finally:
+                    self.f = original_fixture
+                    flow.doCleanups()
 
     def test_unknown_create_only_reconciles_and_not_created_retries_same_intent(self):
         prepared, _, request = self.recovery_intent(); f = self.f
         first = f.invoke('control',request)['next_action']
         self.assertEqual(first['operation'],'invoke-recovery-host')
+        import json
+        import workflow_progress as progress
+        store = progress.state_store.StateStore(f.checkpoint)
+        current = store.open_current()
+        original_key = store.receipt_key(current, actor='task', kind='control:dispatch-recovery-intent',
+            subject=f.state()['stage_subject'], invocation=request['receipt']['reference'])
+        original_result = store.read_receipt(current, original_key, request)
+        original_path = store._receipt_path(original_key)
+        original_receipt = original_path.read_bytes()
+        original_marker = store.directory / 'commits' / str(json.loads(original_receipt)['revision'])
+        original_proof = original_marker.read_bytes()
         self.replacement_response(prepared,first['request'],'unknown','unknown-response')
         for operation in ('advance','resume'):
             self.assertEqual(f.invoke(operation)['next_action']['operation'],'lookup-recovery-host')
@@ -246,6 +287,34 @@ class DispatchRecoveryTests(unittest.TestCase):
         self.assertEqual(first['request'],retried['request'])
         self.assert_original_intent_ack(request)
         self.assertEqual(f.invoke('advance')['next_action']['operation'], 'lookup-recovery-host')
+        self.replacement_response(prepared, first['request'], 'unknown', 'unknown-after-retry')
+        before = f.checkpoint.read_bytes()
+        self.replacement_response(prepared, first['request'], 'not-created', 'not-created-response')
+        self.assertEqual(f.checkpoint.read_bytes(), before)
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['recovery']['state'], 'dispatch-unknown')
+        self.assert_original_intent_ack(request)
+        for operation in ('advance', 'resume'):
+            lookup = f.invoke(operation)['next_action']
+            self.assertEqual(lookup['operation'], 'lookup-recovery-host')
+            self.assertEqual(lookup['request'], first['request'])
+        self.replacement_response(prepared, first['request'], 'not-created', 'not-created-response-2')
+        second = f.invoke('control', request)['next_action']
+        self.assertEqual(second['operation'], 'invoke-recovery-host', second)
+        self.assertEqual(second['request'], first['request'])
+        self.assert_original_intent_ack(request)
+        self.assertEqual(original_path.read_bytes(), original_receipt)
+        self.assertEqual(original_marker.read_bytes(), original_proof)
+        self.assertEqual(store.read_receipt(store.open_current(), original_key, request), original_result)
+        original_recovery = copy.deepcopy(f.state()['control']['context']['handoff_progress']['recovery'])
+        foreign = copy.deepcopy(request)
+        foreign['receipt']['controller_ref'] = 'other-task'
+        with patch.object(dispatch, 'checkpoint', side_effect=AssertionError('foreign retry dispatched')):
+            rejected = f.invoke('control', foreign)
+        self.assertEqual(rejected['status'], 'blocked', rejected)
+        self.assertEqual(rejected['error']['code'], 'receipt_conflict')
+        self.assertEqual(f.state()['control']['context']['handoff_progress']['recovery'], original_recovery)
+        self.assertEqual(original_path.read_bytes(), original_receipt)
+        self.assertEqual(original_marker.read_bytes(), original_proof)
 
     def test_original_creation_receipt_is_retained_after_host_loss_without_activation(self):
         prepared, _, request = self.recovery_intent(); f = self.f
