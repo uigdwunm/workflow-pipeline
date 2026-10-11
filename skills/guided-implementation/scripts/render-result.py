@@ -41,12 +41,15 @@ def parse_artifacts(value):
             artifact[field] = value.strip()
 
         location = artifact["location"]
+        if Path(location).is_absolute():
+            continue
         try:
             url = urlsplit(location)
-            is_url = url.scheme in ("http", "https") and bool(url.hostname)
+            hostname = url.hostname
+            url.port
         except ValueError as error:
             raise argparse.ArgumentTypeError(f"第 {index} 项成果的链接无效") from error
-        if not Path(location).is_absolute() and not is_url:
+        if url.scheme not in ("http", "https") or not hostname or any(char.isspace() for char in hostname):
             raise argparse.ArgumentTypeError(
                 f"第 {index} 项成果的位置必须是绝对文件路径或 HTTP(S) 链接"
             )
@@ -92,8 +95,8 @@ def render_result(summary, artifacts, started_at, continuous_mode,
             lines.append("当前是连续模式，下一步将进入 4归档 流程")
         else:
             lines.append(
-                "当前是连续模式，但当前环境缺少 `change-closure`。"
-                "请先安装该 Skill，再进入 4归档 流程。"
+                "当前是连续模式，但当前环境无法使用 `change-closure`。"
+                "请先检查该 Skill 的安装、启用状态及入口，再进入 4归档 流程。"
             )
     elif closure_skill_available:
         lines.extend([
@@ -103,7 +106,7 @@ def render_result(summary, artifacts, started_at, continuous_mode,
         ])
     else:
         lines.append(
-            "当前环境缺少 `change-closure`。请先安装该 Skill，再进入 4归档 流程。"
+            "当前环境无法使用 `change-closure`。请先检查该 Skill 的安装、启用状态及入口，再进入 4归档 流程。"
         )
 
     return "\n".join("> " + line if line else ">" for line in lines) + "\n"
