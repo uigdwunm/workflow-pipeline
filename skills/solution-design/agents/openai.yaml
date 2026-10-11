@@ -1,0 +1,7 @@
+interface:
+  display_name: "2方案"
+  short_description: "基于已确认需求制定技术方案和实施计划，明确设计取舍、阶段产物与验收依据"
+  default_prompt: "使用 $solution-design，根据已确认的需求制定技术方案和实施计划，为3实现准备规划文档。"
+
+policy:
+  allow_implicit_invocation: true
