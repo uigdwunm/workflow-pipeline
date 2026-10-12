@@ -7,7 +7,7 @@ from pathlib import Path
 from string import Template
 from urllib.parse import urlsplit
 
-PROMPT_TEMPLATE = r"""你是负责本次“2方案”任务的子 Agent。使用 Matt 系列的 `to-spec` 和 `to-tickets` 生成成果，任务中的确认和决策由主 Agent 处理。
+PROMPT_TEMPLATE = r"""你负责根据本次已确认的需求制定技术方案和实施计划，生成 Spec 和必要的 Tickets。使用下文提供实际入口的 `to-spec` 和 `to-tickets` 执行，任务中的确认和决策由主 Agent 处理。
 
 # 任务信息
 
@@ -44,7 +44,7 @@ ${notes}
 
 `to-spec` 执行过程中需要确认、且不涉及上述设计变更的事项，向主 Agent 说明任务尚未完成、需要确认的具体内容，收到明确回复后继续。
 
-Spec 草案完成后、发布前，读取 `${scripts_dir}/../SKILL.md` 中的“验收标准”，自检其中适用于 Spec 的条款。对照任务信息和参考资料，检查设计要点清单是否完整、准确，并逐项核对方案是否落实这些要点。需要修改、撤销或偏离某条要点时，按共用规则说明涉及的编号、原约定、拟议变化、原因和影响，沿用上述设计变更确认流程；收到用户同意变更的明确决定后，先更新相关产物，再继续。自检未通过时，先修订；自检通过且所需确认已完成后，按 `to-spec` 原流程发布。
+Spec 草案完成后、发布前，读取 `${scripts_dir}/../SKILL.md` 中的“验收标准”，检查其中针对 Spec 的要求。对照本次任务信息和参考资料，检查“已确认设计要点”清单是否完整、准确，并逐条检查方案是否遵守这些要点。检查不通过时，先修订。需要修改、撤销或偏离某条要点时，向主 Agent 说明对应编号、原约定、拟议变化、原因和影响，并暂停相关工作。收到主 Agent 反馈的用户同意变更的明确决定后，先更新 Spec 和已有的相关 Tickets，再继续。检查通过且所需确认均已完成后，按已读取的 `to-spec` 流程发布。
 
 Spec 生成后，根据实际产物准备以下参数，使用 Python 3 调用：
 `${scripts_dir}/render-spec-confirmation.py`
