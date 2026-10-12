@@ -112,7 +112,12 @@ def render_result(summary, artifacts, started_at, recommended_stage,
     lines.append(f"建议进入 **{stage_name}**，{recommendation_lines[0]}")
     lines.extend(recommendation_lines[1:])
     lines.append("")
-    if next_skill_available:
+    if next_skill_available is None:
+        lines.append(
+            f"**{stage_name}** 对应 Skill 的可用情况尚未核实，交接暂缓。"
+            "进入该流程前需重新核实。"
+        )
+    elif next_skill_available:
         lines.append(f"是否进入 **{stage_name}** 流程？")
     else:
         lines.append(
@@ -146,8 +151,8 @@ def main():
         help="建议进入该阶段的理由，支持多行文本",
     )
     parser.add_argument(
-        "--next-skill-available", required=True, choices=("true", "false"),
-        help="建议阶段对应的 Skill 是否已核实可用",
+        "--next-skill-available", required=True, choices=("true", "false", "unknown"),
+        help="建议阶段对应的 Skill 可用情况：true 已核实可用，false 已确认不可用，unknown 尚未核实",
     )
     args = parser.parse_args()
     now = datetime.now(timezone.utc)
@@ -156,7 +161,7 @@ def main():
     print(render_result(
         args.summary, args.artifacts, args.started_at,
         args.recommended_stage, args.recommendation,
-        args.next_skill_available == "true", now,
+        {"true": True, "false": False, "unknown": None}[args.next_skill_available], now,
     ), end="")
 
 
