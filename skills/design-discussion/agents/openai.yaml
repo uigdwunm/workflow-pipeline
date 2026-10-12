@@ -1,0 +1,7 @@
+interface:
+  display_name: "1拷问"
+  short_description: "通过拷问澄清想法和设计，形成已确认结论，为2方案或3实现准备依据"
+  default_prompt: "围绕当前想法或设计开展拷问和澄清，形成已确认结论，并建议进入2方案或3实现。"
+
+policy:
+  allow_implicit_invocation: true
