@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# coding: utf-8
 """根据固定步骤和任务参数生成 4归档执行清单，保留已有文件。"""
 
 import argparse

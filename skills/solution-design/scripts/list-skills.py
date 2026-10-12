@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# coding: utf-8
 """只读查询 Codex 当前项目的完整 Skills 登记信息。"""
 
 import argparse

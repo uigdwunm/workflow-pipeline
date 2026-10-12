@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# coding: utf-8
 """根据固定参数生成子 Agent 发给主 Agent 的意外中断消息。"""
 
 import argparse

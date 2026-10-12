@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# coding: utf-8
 """根据固定任务参数生成新对话的完整首轮提示词。"""
 
 import argparse
@@ -13,6 +14,8 @@ PROMPT_TEMPLATE = r"""你要帮助用户澄清下面的想法或设计。请在�
 这次讨论由另一条对话转交而来。讨论完成后，需要把结果发回下方指定的“结果接收对话”，由它继续处理后续工作。
 
 从下方上下文提供的实际入口读取 `grill-with-docs` 的完整 SKILL.md，按其原流程执行。
+
+执行本地文本写入前，读取 `${skill_path}` 中的“本地文本写入”章节，遵守其中要求。
 
 # 讨论任务
 
@@ -149,6 +152,7 @@ def render_new_conversation_prompt(project, goal, context, sources,
         f"- {item['name']}：{item['location']}" for item in discussion_documents
     )
     return Template(PROMPT_TEMPLATE).substitute(
+        skill_path=str(Path(__file__).resolve().parents[1] / "SKILL.md"),
         project=project,
         goal=goal,
         context=context,

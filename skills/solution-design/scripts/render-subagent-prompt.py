@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# coding: utf-8
 """根据固定任务参数生成子 Agent 首轮提示词。"""
 
 import argparse
@@ -29,6 +30,8 @@ ${notes}
 # 执行流程
 
 本次使用的 `to-spec` 和 `to-tickets` 实际入口由主 Agent 通过完整 Skills 登记查询核实，列在任务上下文的“执行信息”中。调用相应 Skill 前，从该入口读取完整 `SKILL.md`，按其原流程执行。入口无法读取、未提供或需要重新定位时，按本提示词“意外中断”的要求向主 Agent 报告，等待其针对原目标项目核实并传递入口。
+
+执行本地文本写入前，读取 `${scripts_dir}/../SKILL.md` 中的“本地文本写入”章节，遵守其中要求。
 
 ## 1. 生成并确认 Spec
 

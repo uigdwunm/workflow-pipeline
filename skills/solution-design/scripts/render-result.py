@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# coding: utf-8
 """根据固定参数生成 2方案的 Markdown 结果报告。"""
 
 import argparse
