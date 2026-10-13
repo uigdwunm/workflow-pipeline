@@ -77,7 +77,7 @@ def render_subagent_interruption(step, reason, completed_work, artifacts,
         artifact_list = "尚未生成产物。"
     return f"""**状态：整体任务尚未完成，执行意外中断**
 
-后续执行已暂停。本次报告需要你了解中断情况，决定本子 Agent 接下来如何处理，并将处理结论通知我。
+受影响工作已暂停。本次报告需要你了解中断情况，决定本子 Agent 接下来如何处理，并将处理结论通知我。
 
 **中断步骤**
 
@@ -103,7 +103,7 @@ def render_subagent_interruption(step, reason, completed_work, artifacts,
 
 {format_text(recommendation)}
 
-收到你的处理结论前，后续执行保持暂停。
+收到你的处理结论前，受影响工作保持暂停，可以继续不依赖该决定的工作。
 """
 
 
