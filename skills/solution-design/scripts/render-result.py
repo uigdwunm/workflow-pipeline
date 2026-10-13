@@ -89,9 +89,16 @@ def render_result(summary, artifacts, started_at, continuous_mode,
         "",
         "---",
         "",
+        "**下一步**",
+        "",
     ])
 
-    if continuous_mode:
+    if implementation_skill_available is None:
+        lines.append(
+            "**3实现** 对应 Skill 的可用情况尚未核实，交接暂缓。"
+            "进入该流程前需重新核实。"
+        )
+    elif continuous_mode:
         if implementation_skill_available:
             lines.append("当前是连续模式，下一步将进入 3实现 流程")
         else:
@@ -129,8 +136,8 @@ def main():
         help="当前是否处于连续模式",
     )
     parser.add_argument(
-        "--implementation-skill-available", required=True, choices=("true", "false"),
-        help="当前可用 Skills 是否包含 guided-implementation",
+        "--implementation-skill-available", required=True, choices=("true", "false", "unknown"),
+        help="guided-implementation 的可用情况：true 已核实可用，false 已确认不可用，unknown 尚未核实",
     )
     args = parser.parse_args()
     if not args.summary.strip():
@@ -141,7 +148,7 @@ def main():
     print(render_result(
         args.summary, args.artifacts, args.started_at,
         args.continuous_mode == "true",
-        args.implementation_skill_available == "true", now,
+        {"true": True, "false": False, "unknown": None}[args.implementation_skill_available], now,
     ), end="")
 
 

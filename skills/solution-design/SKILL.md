@@ -146,13 +146,16 @@ python3 '/Skill绝对路径/scripts/render-result.py' \
 | `--artifacts` | 根据验收通过的实际成果填写非空 JSON 数组，包含 Spec 和本次需要的 Tickets。每项仅包含 `name` 和 `location`，分别填写成果名称及实际绝对文件路径或 HTTP(S) 链接，两者均为非空单行文本。 |
 | `--started-at` | 进入本 Skill 时记录的开始时间。 |
 | `--continuous-mode` | 根据本次任务最新的用户要求判断。已明确要求连续模式且没有撤销或缩小该要求时为 `true`，否则为 `false`。 |
-| `--implementation-skill-available` | 根据收尾时针对目标项目的完整登记信息判断：`guided-implementation` 已启用且入口可读取时为 `true`，已确认无法使用时为 `false`。仅核对登记信息和入口可读取性，不加载正文。查询失败或无法确定采用哪个入口时，按意外中断规则处理，保留已完成成果，不将查询失败当成依赖缺失。 |
+| `--implementation-skill-available` | 根据收尾时针对目标项目的完整登记信息判断：`guided-implementation` 已启用且入口可读取时为 `true`，已确认不存在、已禁用或入口无法读取时为 `false`，查询失败或无法确定采用哪个入口时为 `unknown`。仅核对登记信息和入口可读取性，不加载正文。为 `unknown` 时说明具体问题，照常报告已验收成果，仅暂停对应交接。 |
+
+连续模式用于自动衔接后续阶段；各阶段内部的设计确认、授权和验收仍按原规则执行。
 
 将脚本标准输出中的 Markdown 原样展示给用户，根据报告中的交接提示执行：
 
 - 报告提示直接进入 3实现 时，立即调用名为 `guided-implementation` 的 Skill。
 - 报告询问用户时，等待用户回复。用户明确同意进入 3实现 时，调用 `guided-implementation`；用户明确要求开启连续模式时，记录该要求后调用 `guided-implementation`。仅同意进入 3实现 不视为开启连续模式。
 - 报告提示当前无法使用 `guided-implementation` 时，暂停交接，等待用户检查其安装、启用状态及入口。
+- 报告提示可用情况尚未核实时，先重新核实，再按对应可用状态处理。核实可用后，沿用已记录的用户选择或连续模式要求继续；没有相应要求时，等待用户选择。仍无法核实时，保持交接暂停并说明具体问题。
 
 调用 `guided-implementation` 时，从已核实的实际入口读取其完整正文，将以下内容作为本次实现的输入传达：
 

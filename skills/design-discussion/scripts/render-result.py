@@ -11,6 +11,11 @@ from urllib.parse import quote, urlsplit
 
 
 STAGE_NAMES = {"2": "2方案", "3": "3实现"}
+STAGE_SKILLS = {"2": "solution-design", "3": "guided-implementation"}
+CONTINUOUS_STAGES = {
+    "2": "**2方案、3实现和4归档**",
+    "3": "**3实现和4归档**",
+}
 
 
 def parse_text(value):
@@ -87,9 +92,10 @@ def format_duration(seconds):
 
 
 def render_result(summary, artifacts, started_at, recommended_stage,
-                  recommendation, next_skill_available, now):
+                  recommendation, continuous_mode, next_skill_available, now):
     duration = int((now - started_at).total_seconds())
     stage_name = STAGE_NAMES[recommended_stage]
+    skill_name = STAGE_SKILLS[recommended_stage]
     lines = ["**1拷问已完成**", "", "**拷问摘要**  "]
     lines.extend(escape_text(line.strip()) for line in summary.strip().splitlines())
     lines.extend(["", "**成果**", ""])
@@ -104,7 +110,7 @@ def render_result(summary, artifacts, started_at, recommended_stage,
         "",
         "---",
         "",
-        "**下一步建议**",
+        "**下一步**",
         "",
     ])
     recommendation_lines = [
@@ -118,12 +124,24 @@ def render_result(summary, artifacts, started_at, recommended_stage,
             f"**{stage_name}** 对应 Skill 的可用情况尚未核实，交接暂缓。"
             "进入该流程前需重新核实。"
         )
+    elif continuous_mode:
+        if next_skill_available:
+            lines.append(f"当前是连续模式，下一步将进入 {stage_name} 流程")
+        else:
+            lines.append(
+                f"当前是连续模式，但当前环境无法使用 `{skill_name}`。"
+                f"请先检查该 Skill 的安装、启用状态及入口，再进入 {stage_name} 流程。"
+            )
     elif next_skill_available:
-        lines.append(f"是否进入 **{stage_name}** 流程？")
+        lines.extend([
+            f"是否进入 **{stage_name}** 流程？",
+            "",
+            f"是否开启**连续模式**？开启后，将自动执行 {CONTINUOUS_STAGES[recommended_stage]}。",
+        ])
     else:
         lines.append(
-            f"当前环境无法使用 **{stage_name}** 对应的 Skill。"
-            "请先检查其安装、启用状态及入口，再进入该流程。"
+            f"当前环境无法使用 `{skill_name}`。"
+            f"请先检查该 Skill 的安装、启用状态及入口，再进入 {stage_name} 流程。"
         )
 
     return "\n".join("> " + line if line else ">" for line in lines) + "\n"
@@ -152,6 +170,10 @@ def main():
         help="建议进入该阶段的理由，支持多行文本",
     )
     parser.add_argument(
+        "--continuous-mode", required=True, choices=("true", "false"),
+        help="当前是否处于连续模式",
+    )
+    parser.add_argument(
         "--next-skill-available", required=True, choices=("true", "false", "unknown"),
         help="建议阶段对应的 Skill 可用情况：true 已核实可用，false 已确认不可用，unknown 尚未核实",
     )
@@ -162,6 +184,7 @@ def main():
     print(render_result(
         args.summary, args.artifacts, args.started_at,
         args.recommended_stage, args.recommendation,
+        args.continuous_mode == "true",
         {"true": True, "false": False, "unknown": None}[args.next_skill_available], now,
     ), end="")
 
