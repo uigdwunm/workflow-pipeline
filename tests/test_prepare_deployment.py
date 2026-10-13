@@ -73,6 +73,28 @@ class DeploymentTests(unittest.TestCase):
         manifest = deployment.verify(self.output)
         self.assertEqual([skill["name"] for skill in manifest["skills"]], list(deployment.SKILLS))
 
+    def test_split_skill_still_requires_declared_dependencies(self):
+        cases = (
+            ("design-discussion", "grill-with-docs"),
+            ("design-discussion", "solution-design"),
+        )
+        for skill, dependency in cases:
+            with self.subTest(skill=skill, dependency=dependency):
+                changed = {}
+                for path in (self.repository / "skills" / skill).rglob("*.md"):
+                    original = path.read_text(encoding="utf-8")
+                    if f"`{dependency}`" in original:
+                        changed[path] = original
+                        path.write_text(original.replace(f"`{dependency}`", "`missing-skill`"),
+                                        encoding="utf-8")
+                try:
+                    with self.assertRaisesRegex(deployment.DeploymentError, dependency):
+                        deployment.build(self.repository, self.output)
+                    self.assertFalse(self.output.exists())
+                finally:
+                    for path, original in changed.items():
+                        path.write_text(original, encoding="utf-8")
+
     def test_verify_rejects_changed_missing_added_files_and_permissions(self):
         cases = ["changed", "missing", "added", "mode", "fifth"]
         for case in cases:
@@ -102,7 +124,6 @@ class DeploymentTests(unittest.TestCase):
             "name": original.replace("name: design-discussion", "name: another-skill"),
             "stage": original.replace('stage: "1"', 'stage: "0"'),
             "non-json-yaml": original.replace("license: MIT", "license: 2026-10-12"),
-            "missing-dependency": original.replace("`grill-with-docs`", "`other-skill`"),
             "reference": original + "\n[missing](references/missing.md)\n",
             "escaping": original + "\n[escape](../../LICENSE)\n",
         }

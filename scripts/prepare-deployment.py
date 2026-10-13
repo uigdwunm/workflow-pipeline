@@ -25,6 +25,7 @@ SKILLS = {
         "stage": "1",
         "required_skills": ["grill-with-docs", "grilling", "domain-modeling"],
         "handoff_skills": ["solution-design", "guided-implementation"],
+        "dependency_files": ["SKILL.md", "references/clarification-flow.md"],
         "project_requirements": [],
     },
     "solution-design": {
@@ -137,8 +138,15 @@ def inspect_skill(name, files):
     stage = metadata.get("metadata", {})
     if not isinstance(stage, dict) or stage.get("stage") != SKILLS[name]["stage"]:
         raise DeploymentError(f"metadata.stage 必须是字符串 {SKILLS[name]['stage']}：{name}/SKILL.md")
+    dependency_files = SKILLS[name].get("dependency_files", ["SKILL.md"])
+    for relative in dependency_files:
+        if relative not in files:
+            raise DeploymentError(f"缺少依赖声明文件：{name}/{relative}")
+    instructions = "\n".join(
+        text_content(files[relative][0], f"{name}/{relative}") for relative in dependency_files
+    )
     for dependency in SKILLS[name]["required_skills"] + SKILLS[name]["handoff_skills"]:
-        if f"`{dependency}`" not in body:
+        if f"`{dependency}`" not in instructions:
             raise DeploymentError(f"部署清单与 Skill 正文不一致，未找到依赖或交接：{name} -> {dependency}")
 
     interface = {}
