@@ -73,8 +73,33 @@ class DeploymentTests(unittest.TestCase):
         manifest = deployment.verify(self.output)
         self.assertEqual([skill["name"] for skill in manifest["skills"]], list(deployment.SKILLS))
 
+    def test_guided_implementation_manifest_separates_branch_dependencies(self):
+        manifest = deployment.build(self.repository, self.output)
+        skill = next(item for item in manifest["skills"] if item["name"] == "guided-implementation")
+        self.assertEqual(skill["required_skills"], ["code-review"])
+        self.assertEqual(set(skill["conditional_skills"]), {"implement-spec", "implement", "tdd"})
+        self.assertTrue(all(skill["conditional_skills"].values()))
+        self.assertEqual(skill["handoff_skills"], ["solution-design", "change-closure"])
+        self.assertTrue({
+            "references/spec-execution.md",
+            "references/small-change-execution.md",
+            "references/completion.md",
+        }.issubset({item["path"] for item in skill["files"]}))
+        self.assertEqual(deployment.verify(self.output), manifest)
+
+        manifest_path = self.output / "manifest.json"
+        tampered = json.loads(manifest_path.read_text(encoding="utf-8"))
+        next(item for item in tampered["skills"] if item["name"] == "guided-implementation")[
+            "conditional_skills"
+        ].pop("implement")
+        manifest_path.write_text(json.dumps(tampered), encoding="utf-8")
+        with self.assertRaisesRegex(deployment.DeploymentError, "不一致"):
+            deployment.verify(self.output)
+
     def test_split_skill_still_requires_declared_dependencies(self):
         cases = (
+            ("guided-implementation", "implement"),
+            ("guided-implementation", "change-closure"),
             ("design-discussion", "grill-with-docs"),
             ("design-discussion", "solution-design"),
         )

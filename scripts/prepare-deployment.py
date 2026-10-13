@@ -36,8 +36,15 @@ SKILLS = {
     },
     "guided-implementation": {
         "stage": "3",
-        "required_skills": ["implement-spec", "tdd", "code-review"],
-        "handoff_skills": ["change-closure"],
+        "required_skills": ["code-review"],
+        # 分支依赖按条件核实，不作为所有任务的共同前置条件。
+        "conditional_skills": {
+            "implement-spec": "已有 Spec 的实现路径",
+            "implement": "没有 Spec 的小改动实现路径",
+            "tdd": "Spec 路径，或小改动路径需要使用 TDD 时",
+        },
+        "handoff_skills": ["solution-design", "change-closure"],
+        "dependency_files": ["SKILL.md", "references/completion.md"],
         "project_requirements": ["docs/agents/issue-tracker.md"],
     },
     "change-closure": {
@@ -145,7 +152,11 @@ def inspect_skill(name, files):
     instructions = "\n".join(
         text_content(files[relative][0], f"{name}/{relative}") for relative in dependency_files
     )
-    for dependency in SKILLS[name]["required_skills"] + SKILLS[name]["handoff_skills"]:
+    conditional_skills = SKILLS[name].get("conditional_skills", {})
+    dependencies = (
+        SKILLS[name]["required_skills"] + list(conditional_skills) + SKILLS[name]["handoff_skills"]
+    )
+    for dependency in dependencies:
         if f"`{dependency}`" not in instructions:
             raise DeploymentError(f"部署清单与 Skill 正文不一致，未找到依赖或交接：{name} -> {dependency}")
 
@@ -197,6 +208,7 @@ def inspect_skill(name, files):
         "interface": interface,
         "allow_implicit_invocation": allow_implicit,
         "required_skills": SKILLS[name]["required_skills"],
+        **({"conditional_skills": conditional_skills} if conditional_skills else {}),
         "handoff_skills": SKILLS[name]["handoff_skills"],
         "project_requirements": SKILLS[name]["project_requirements"],
         "package_sha256": package_hash,
