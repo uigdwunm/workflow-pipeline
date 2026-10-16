@@ -76,12 +76,14 @@ class ClosureReportTests(unittest.TestCase):
             self.progress('complete', '--stage', stage, '--step', str(number), '--at', at, '--note', note)
 
     def report_arguments(self, *arguments, task_id=None, project=None, artifacts=None, at=END,
-                         summary=REPORT_SUMMARY):
+                         summary=REPORT_SUMMARY, pending='无'):
         values = [str(REPORT_SCRIPT), '--file', str(self.file), '--task-id', task_id or self.task_id,
                   '--project', str(project or self.project), '--at', at,
                   '--artifacts', json.dumps(self.artifacts if artifacts is None else artifacts)]
         if summary is not None:
             values += ['--summary', summary]
+        if pending is not None:
+            values += ['--pending', pending]
         return values + list(arguments)
 
     def run_report(self, *arguments, success=True, **kwargs):
@@ -259,7 +261,7 @@ class ClosureReportTests(unittest.TestCase):
         for number in (1, 2):
             self.progress('complete', '--stage', '4', '--step', str(number), '--note', '已核对', '--at', START)
         before = self.file.read_bytes()
-        result = self.run_report('--pending', '远程合并结果尚未核实，等待查询恢复', '--resources', '尚未清理资源')
+        result = self.run_report('--resources', '尚未清理资源', pending='远程合并结果尚未核实，等待查询恢复')
         self.assertIn('**4归档未完成**', result.stdout)
         self.assertIn('阶段尚未结束', result.stdout)
         self.assertIn('远程合并结果尚未核实', result.stdout)
@@ -268,25 +270,48 @@ class ClosureReportTests(unittest.TestCase):
         self.assertIsNone(self.show()['stages'][0]['finished_at'])
         self.assert_report_rejected('--complete', '--resources', RESOURCES)
 
+    def test_completion_requires_explicit_pending_assessment(self):
+        self.complete_four()
+        before = self.file.read_bytes()
+        result = self.finished_report(pending=None, success=False)
+        self.assertIn('--pending', result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.assertIsNone(self.show()['stages'][0]['finished_at'])
+
+    def test_pending_scope_question_blocks_completion_and_preserves_current_run(self):
+        self.complete_four()
+        before = self.file.read_bytes()
+        pending = '等待用户决定是否同步移除两处客户端语言判断；答复后继续验收和资源收尾'
+        rejected = self.finished_report(pending=pending, success=False)
+        self.assertIn('存在未完成事项', rejected.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+
+        result = self.finished_report(pending='无')
+        self.assertIn('**4归档已完成**', result.stdout)
+        phase = self.show()['stages'][0]
+        self.assertEqual(phase['status'], '已完成')
+        self.assertEqual(phase['started_at'], START)
+        self.assertEqual(phase['run'], 1)
+
     def test_completion_requires_inputs_four_steps_resources_and_no_pending_items(self):
         self.assert_report_rejected('--complete', '--resources', RESOURCES)
         self.complete_four()
         self.assert_report_rejected('--complete')
         self.assert_report_rejected('--complete', '--resources', '')
-        self.assert_report_rejected('--complete', '--resources', RESOURCES, '--pending', '必要资源尚未清理')
+        self.assert_report_rejected('--complete', '--resources', RESOURCES, pending='必要资源尚未清理')
         self.assert_report_rejected('--complete', '--resources', RESOURCES, at='2019-01-01T00:00:00Z')
         self.assert_report_rejected('--complete', '--resources', RESOURCES, at='2999-01-01T00:00:00Z')
         self.file.unlink()
         self.create(with_closure=False)
         self.complete_four()
         self.assert_report_rejected('--complete', '--resources', RESOURCES)
-        self.run_report('--pending', '归档输入未核实')
+        self.run_report(pending='归档输入未核实')
 
     def test_cancelled_report_preserves_completed_steps_and_termination_time(self):
         self.progress('complete', '--stage', '4', '--step', '1', '--note', '成果已核实', '--at', START)
         self.progress('stop', '--stage', '4', '--note', '用户取消归档', '--at', END)
         before = self.file.read_bytes()
-        result = self.run_report('--pending', '用户取消归档，合并交付未执行')
+        result = self.run_report(pending='用户取消归档，合并交付未执行')
         self.assertIn('**4归档已终止**', result.stdout)
         self.assertIn(REPORT_SUMMARY, result.stdout)
         self.assertNotIn('阶段尚未结束', result.stdout)

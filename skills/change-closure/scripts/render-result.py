@@ -100,7 +100,7 @@ def main():
     parser.add_argument("--artifacts", required=True, type=parse_artifacts, help="当前实际交付位置的 JSON 数组，允许 []")
     parser.add_argument("--complete", action="store_true", help="归档前四步和资源处理均已完成，生成报告并结束阶段")
     parser.add_argument("--resources", help="一句实际资源处理结果，包括保留或不由本 Skill 管理的资源")
-    parser.add_argument("--pending", default="无", help="尚未完成事项及接续条件；成功报告使用默认值")
+    parser.add_argument("--pending", required=True, help="显式填写未完成和待决事项及接续条件；核实均无后填“无”")
     parser.add_argument("--at", help="实际报告时间，含时区的 ISO 8601 时间；默认取当前时间")
     args = parser.parse_args()
     try:
