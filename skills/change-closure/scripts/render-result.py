@@ -54,12 +54,12 @@ def report_durations(data, at):
     return durations
 
 
-def render_result(data, artifacts, pending, resources, at):
+def render_result(data, summary, artifacts, pending, resources, at):
     phase = data["stages"][-1]
     state = {"进行中": "未完成", "已完成": "已完成", "已终止": "已终止"}[phase["status"]]
     closure = phase.get("closure", {})
     lines = [
-        "**本次任务**", "", progress.escape(data["summary"]), "",
+        "**本次任务**", "", progress.escape(summary), "",
         f"**4归档{state}**", "",
         f"**目标项目**：{artifact_link({'name': data['project'], 'location': data['project']})}",
         f"**目标分支**：{progress.escape(closure.get('target_branch', '尚未核实'))}", "",
@@ -96,6 +96,7 @@ def main():
     parser.add_argument("--file", required=True, help="统一进度文件的绝对路径")
     parser.add_argument("--task-id", required=True, help="创建时返回的固定任务标识")
     parser.add_argument("--project", required=True, help="原目标项目的绝对路径")
+    parser.add_argument("--summary", required=True, help="整个任务的目标与最终确认范围，使用非空单行文本")
     parser.add_argument("--artifacts", required=True, type=parse_artifacts, help="当前实际交付位置的 JSON 数组，允许 []")
     parser.add_argument("--complete", action="store_true", help="归档前四步和资源处理均已完成，生成报告并结束阶段")
     parser.add_argument("--resources", help="一句实际资源处理结果，包括保留或不由本 Skill 管理的资源")
@@ -105,6 +106,7 @@ def main():
     try:
         path = progress.absolute_path(args.file, "进度文档")
         project = progress.absolute_path(args.project, "目标项目")
+        summary = progress.text(args.summary, "任务描述")
         pending = progress.text(args.pending, "未完成事项")
         resources = progress.text(args.resources, "资源处理结果") if args.resources is not None else None
         at = progress.event_time(args.at)
@@ -131,7 +133,7 @@ def main():
                 raise progress.ProgressError("未结束归档须说明未完成事项及接续条件")
             if phase["status"] == "已完成" and pending != "无":
                 raise progress.ProgressError("已结束归档的记录与未完成事项不一致，请先核实实际状态")
-            result = render_result(data, args.artifacts, pending, resources, at)
+            result = render_result(data, summary, args.artifacts, pending, resources, at)
             if progress.render(data) != original:
                 progress.write_document(path, data)
         print(result, end="")

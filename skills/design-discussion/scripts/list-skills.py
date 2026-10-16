@@ -36,6 +36,13 @@ def parse_cwd(value):
     return str(path)
 
 
+def parse_name(value):
+    if (not value.strip()
+            or any(ord(char) < 32 or ord(char) == 127 or char in "\x85\u2028\u2029" for char in value)):
+        raise argparse.ArgumentTypeError("Skill 名称必须是非空单行文本，不能包含控制字符")
+    return value
+
+
 def normalize_registry(result, cwd):
     data = result.get("data")
     if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
@@ -162,9 +169,17 @@ def query_registry(cwd):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cwd", required=True, type=parse_cwd, help="目标项目的实际绝对目录")
+    parser.add_argument("--name", dest="names", action="append", type=parse_name,
+                        help="按精确名称筛选输出，可重复传入；仍查询和校验完整登记")
     args = parser.parse_args()
     try:
         result = query_registry(args.cwd)
+        if args.names:
+            names = set(args.names)
+            skills = [skill for skill in result["skills"] if skill["name"] in names]
+            present = {skill["name"] for skill in skills}
+            result = {**result, "skills": skills,
+                      "missing": [name for name in dict.fromkeys(args.names) if name not in present]}
     except RegistryError as error:
         print(json.dumps({"ok": False, "cwd": args.cwd, "error": {
             "code": error.code, "message": str(error), **error.details,

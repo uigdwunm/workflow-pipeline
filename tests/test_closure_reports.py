@@ -23,6 +23,7 @@ SPEC.loader.exec_module(report)
 START = '2020-01-01T10:00:00+08:00'
 END = '2020-01-01T10:05:00+08:00'
 SUMMARY = '为配置加载增加必填项和格式校验'
+REPORT_SUMMARY = '为配置加载增加必填项和格式校验，并交付实现与验证结果'
 RESOURCES = '普通临时 Worktree 已清理；目标分支保留；Codex 托管 Worktree 不由本 Skill 管理'
 
 
@@ -54,9 +55,9 @@ class ClosureReportTests(unittest.TestCase):
             self.assertEqual(result.stdout, '')
         return result
 
-    def create(self, stage='4', with_closure=True):
+    def create(self, stage='4', with_closure=True, summary=SUMMARY):
         values = [str(PROGRESS_SCRIPTS[int(stage) - 1]), 'create', '--output', str(self.file),
-                  '--project', str(self.project), '--summary', SUMMARY, '--stage', stage, '--at', START]
+                  '--project', str(self.project), '--summary', summary, '--stage', stage, '--at', START]
         if with_closure:
             values += ['--closure', json.dumps(self.closure)]
         self.task_id = json.loads(self.invoke(values).stdout)['task_id']
@@ -74,10 +75,14 @@ class ClosureReportTests(unittest.TestCase):
         for number, note in enumerate(notes, 1):
             self.progress('complete', '--stage', stage, '--step', str(number), '--at', at, '--note', note)
 
-    def report_arguments(self, *arguments, task_id=None, project=None, artifacts=None, at=END):
-        return [str(REPORT_SCRIPT), '--file', str(self.file), '--task-id', task_id or self.task_id,
-                '--project', str(project or self.project), '--at', at,
-                '--artifacts', json.dumps(self.artifacts if artifacts is None else artifacts)] + list(arguments)
+    def report_arguments(self, *arguments, task_id=None, project=None, artifacts=None, at=END,
+                         summary=REPORT_SUMMARY):
+        values = [str(REPORT_SCRIPT), '--file', str(self.file), '--task-id', task_id or self.task_id,
+                  '--project', str(project or self.project), '--at', at,
+                  '--artifacts', json.dumps(self.artifacts if artifacts is None else artifacts)]
+        if summary is not None:
+            values += ['--summary', summary]
+        return values + list(arguments)
 
     def run_report(self, *arguments, success=True, **kwargs):
         return self.invoke(self.report_arguments(*arguments, **kwargs), success)
@@ -171,7 +176,7 @@ class ClosureReportTests(unittest.TestCase):
         self.complete_four()
         result = self.finished_report()
         self.assertTrue(result.stdout.startswith('> **本次任务**\n'))
-        self.assertLess(result.stdout.index(SUMMARY), result.stdout.index('**4归档已完成**'))
+        self.assertLess(result.stdout.index(REPORT_SUMMARY), result.stdout.index('**4归档已完成**'))
         self.assertTrue(all(line.startswith('>') for line in result.stdout.splitlines()))
         self.assertIn('**4归档**：5 分钟 0 秒', result.stdout)
         self.assertIn('**流程累计用时**：5 分钟 0 秒', result.stdout)
@@ -186,6 +191,41 @@ class ClosureReportTests(unittest.TestCase):
         self.assertEqual(phase['steps'][-1]['note'], RESOURCES)
         self.assertEqual(phase['steps'][-1]['finished_at'], END)
         self.assertTrue(self.file.exists())
+
+    def test_report_uses_whole_task_summary_after_discussion_and_preserves_initial_summary(self):
+        initial_summary = '讨论移除 readConfirmedSessionState；只讨论、不修改业务代码'
+        whole_task_summary = '移除 readConfirmedSessionState 及重复控制状态，保留必要行为并交付实现与验证结果'
+        self.file.unlink()
+        self.create('1', with_closure=False, summary=initial_summary)
+        for number in (1, 2, 3):
+            self.progress('complete', '--stage', '1', '--step', str(number), '--note', '讨论结论已确认',
+                          '--at', START)
+        for stage in ('2', '3'):
+            self.progress('enter', '--stage', stage, '--at', START)
+            self.complete_four(stage, at=START)
+        self.progress('enter', '--stage', '4', '--at', START, '--closure', json.dumps(self.closure))
+        self.complete_four()
+        previous_stages = deepcopy(self.show()['stages'][:-1])
+
+        result = self.finished_report(summary=whole_task_summary)
+
+        self.assertTrue(result.stdout.startswith('> **本次任务**\n>\n> ' + whole_task_summary + '\n'))
+        self.assertNotIn(initial_summary, result.stdout)
+        data = self.show()
+        self.assertEqual(data['summary'], initial_summary)
+        self.assertEqual(data['stages'][:-1], previous_stages)
+        self.assertEqual(data['stages'][-1]['status'], '已完成')
+
+    def test_missing_or_invalid_task_summary_emits_no_report_and_keeps_progress(self):
+        self.complete_four()
+        before = self.file.read_bytes()
+        for summary in (None, '', '   ', '第一行\n第二行', '第一行\r第二行',
+                        '任务\x85续行', '任务\u2028续行', '任务\u2029续行'):
+            with self.subTest(summary=summary):
+                result = self.finished_report(summary=summary, success=False)
+                self.assertIn('--summary' if summary is None else '任务描述', result.stderr)
+                self.assertEqual(self.file.read_bytes(), before)
+                self.assertFalse(self.file.with_name(self.file.name + '.lock').exists())
 
     def test_handoff_report_aggregates_only_this_task_stages_and_excludes_stage_gaps(self):
         self.file.unlink()
@@ -223,6 +263,7 @@ class ClosureReportTests(unittest.TestCase):
         self.assertIn('**4归档未完成**', result.stdout)
         self.assertIn('阶段尚未结束', result.stdout)
         self.assertIn('远程合并结果尚未核实', result.stdout)
+        self.assertIn(REPORT_SUMMARY, result.stdout)
         self.assertEqual(self.file.read_bytes(), before)
         self.assertIsNone(self.show()['stages'][0]['finished_at'])
         self.assert_report_rejected('--complete', '--resources', RESOURCES)
@@ -247,6 +288,7 @@ class ClosureReportTests(unittest.TestCase):
         before = self.file.read_bytes()
         result = self.run_report('--pending', '用户取消归档，合并交付未执行')
         self.assertIn('**4归档已终止**', result.stdout)
+        self.assertIn(REPORT_SUMMARY, result.stdout)
         self.assertNotIn('阶段尚未结束', result.stdout)
         self.assertEqual(self.file.read_bytes(), before)
         self.assert_report_rejected('--complete', '--resources', RESOURCES)
@@ -328,7 +370,9 @@ class ClosureReportTests(unittest.TestCase):
         self.create()
         self.complete_four()
         result = self.run_report('--complete', '--resources', special,
-                                 artifacts=[{'name': special, 'location': str(self.project / '[spec] |.md')}])
+                                 artifacts=[{'name': special, 'location': str(self.project / '[spec] |.md')}],
+                                 summary=special)
+        self.assertTrue(result.stdout.startswith('> **本次任务**\n>\n> ' + report.progress.escape(special) + '\n'))
         self.assertIn(report.progress.escape(special), result.stdout)
         self.assertIn('%5Bspec%5D%20%7C.md', result.stdout)
         self.assertEqual(self.show()['stages'][0]['closure'], self.closure)
