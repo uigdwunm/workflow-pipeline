@@ -131,7 +131,7 @@ python3 '/Skill绝对路径/scripts/task-progress.py' complete \
 - 主对话与该子 Agent 双向通信。
 - 主对话等待并接收其完成或中断消息。
 
-需要创建探索、实现、合并或审查子 Agent 时，读取[模型与强度规则](references/agent-settings.md)，作为创建要求一并传入。向负责创建子 Agent 的执行者提供该文件的实际绝对路径。
+需要创建探索、实现、合并或审查子 Agent 时，读取并执行[模型与强度规则](references/agent-settings.md)。向负责创建子 Agent 的执行者传入该文件的实际绝对路径，并明确要求其在每次创建前执行选型、记录依据，创建后核实实际设置。该要求同样适用于其继续委派的子 Agent。
 
 不具备完整子 Agent 能力时，由当前主对话承担所选流程中的相应职责，保留其测试、审查和必要验证要求。`code-review` 的 Standards（项目规范）和 Spec（需求符合性）两个方面分别检查。
 
