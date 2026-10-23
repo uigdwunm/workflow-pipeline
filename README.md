@@ -1,8 +1,21 @@
 # Workflow Pipeline
 
-本项目正在重新编写工程工作流 Skills。
+当前版本：**v2.0.0** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v2.0.0)
 
-旧实现保存在分支 `codex/history/2026-10-09`，需要时可从该分支查阅。新 Skill 的范围和结构以重新确认的需求为准。
+四个可独立调用、按需衔接的工程工作流 Skill，覆盖需求澄清、技术方案、实现与归档。
+
+| 阶段 | Skill | 职责 |
+| --- | --- | --- |
+| 1拷问 | [`design-discussion`](skills/design-discussion/SKILL.md) | 澄清想法、查漏补缺，形成用户确认的理解及必要的测试范围。 |
+| 2方案 | [`solution-design`](skills/solution-design/SKILL.md) | 根据已确认需求生成 Spec 和必要的 Tickets，明确设计取舍与验收方式。 |
+| 3实现 | [`guided-implementation`](skills/guided-implementation/SKILL.md) | 按 Spec 或小改动路径完成实现、审查、整改和提交。 |
+| 4归档 | [`change-closure`](skills/change-closure/SKILL.md) | 完成交付、文档和项目状态收尾，清理任务资源并生成结果报告。 |
+
+可以从符合当前任务状态的阶段进入；后续衔接遵循用户的实际决定和连续模式要求。各阶段沿用同一份临时进度文件，交接时核对真实成果和仍有效的确认依据。
+
+方案和实现在独立任务 Worktree 中开展，保留用户常用工作区的分支与编辑器选择。归档核实实际交付结果后，主动清理已交付且不再使用的临时分支，包括子 Agent 分支；托管 Worktree 的归档和移除交给宿主处理。
+
+v2.0.0 重写了 v1.x 工作流，`1拷问` 由 `design-discussion` 承担，发布包不再包含 `problem-framing`，也不提供旧 runner 或运行记录的自动迁移。旧任务需保留原安装和现场，按对应旧版本处理；旧版源码及更新记录可从 [v1.2.2](https://github.com/uigdwunm/workflow-pipeline/tree/v1.2.2) 查阅。
 
 ## 准备本机更新
 
