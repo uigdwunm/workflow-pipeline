@@ -1,6 +1,6 @@
 # Workflow Pipeline
 
-当前版本：**v2.0.0** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v2.0.0)
+当前版本：**v2.0.1** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v2.0.1)
 
 四个可独立调用、按需衔接的工程工作流 Skill，覆盖需求澄清、技术方案、实现与归档。
 
