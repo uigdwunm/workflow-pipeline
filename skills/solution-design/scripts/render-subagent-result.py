@@ -77,7 +77,7 @@ def render_subagent_result(summary, spec_location, tickets, no_tickets_reason):
         tickets_result = f"未拆分 Tickets。原因：{format_text(no_tickets_reason)}"
     return f"""**状态：子 Agent 任务已完成**
 
-本次报告用于交付最终成果，通知你本子 Agent 的执行已完成。请接收以下结果，继续主流程。
+请验收以下成果并接续主流程。
 
 **方案摘要**
 

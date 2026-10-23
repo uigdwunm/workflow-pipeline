@@ -78,15 +78,23 @@ def render_result(data, summary, artifacts, pending, resources, at):
     durations = report_durations(data, at)
     for item in durations:
         suffix = "（截至本次报告，阶段尚未结束）" if item["ongoing"] else ""
-        lines.append(f"- **{item['name']}**：{format_duration(item['duration_seconds'])}{suffix}")
+        duration = format_duration(item["duration_seconds"])
+        if item["runs"] > 1:
+            duration = f"累计 {duration}，共 {item['runs']} 轮"
+            if any(run["stage"] == item["stage"] and run["status"] == "已终止"
+                   for run in data["stages"]):
+                duration += "（含已终止轮次）"
+        lines.append(f"- **{item['name']}**：{duration}{suffix}")
     total = sum(item["duration_seconds"] for item in durations)
-    time_label = "归档结束时间" if phase["finished_at"] else "统计时刻"
-    ending = phase["finished_at"] or at
+    prefix = "本轮" if phase["run"] > 1 else ""
+    time_label = f"{prefix}归档结束时间" if phase["finished_at"] else "统计时刻"
+    started = progress.timestamp(phase["started_at"])
+    ending = progress.timestamp(phase["finished_at"] or at).astimezone(started.tzinfo)
     lines.extend([
         "", f"**流程累计用时**：{format_duration(total)}",
         "按各阶段起止时间累计，包含阶段内等待，不包含阶段间等待。", "",
-        f"**归档开始时间**：{progress.timestamp(phase['started_at']).isoformat(sep=' ', timespec='seconds')}",
-        f"**{time_label}**：{progress.timestamp(ending).isoformat(sep=' ', timespec='seconds')}",
+        f"**{prefix}归档开始时间**：{started.isoformat(sep=' ', timespec='seconds')}",
+        f"**{time_label}**：{ending.isoformat(sep=' ', timespec='seconds')}",
     ])
     return "\n".join("> " + line if line else ">" for line in lines) + "\n"
 

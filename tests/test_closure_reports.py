@@ -194,6 +194,52 @@ class ClosureReportTests(unittest.TestCase):
         self.assertEqual(phase['steps'][-1]['finished_at'], END)
         self.assertTrue(self.file.exists())
 
+    def test_multiple_runs_distinguish_cumulative_duration_and_current_run_times(self):
+        self.progress('stop', '--stage', '4', '--note', '重新核对交付', '--at', END)
+        first_run = deepcopy(self.show()['stages'][0])
+        restarted = '2020-01-01T10:20:00+08:00'
+        self.progress('enter', '--stage', '4', '--new-run', '--at', restarted,
+                      '--closure', json.dumps(self.closure))
+        before = self.file.read_bytes()
+        ongoing = self.run_report(at='2020-01-01T02:23:00+00:00', pending='交付待核实')
+        self.assertIn('**4归档**：累计 8 分钟 0 秒，共 2 轮（含已终止轮次）', ongoing.stdout)
+        self.assertIn('阶段尚未结束', ongoing.stdout)
+        self.assertIn('**本轮归档开始时间**：2020-01-01 10:20:00+08:00', ongoing.stdout)
+        self.assertIn('**统计时刻**：2020-01-01 10:23:00+08:00', ongoing.stdout)
+        self.assertEqual(self.file.read_bytes(), before)
+
+        self.complete_four(at='2020-01-01T02:24:00+00:00')
+        ended = '2020-01-01T02:25:00+00:00'
+        result = self.finished_report(at=ended)
+        self.assertIn('**4归档**：累计 10 分钟 0 秒，共 2 轮（含已终止轮次）', result.stdout)
+        self.assertIn('**流程累计用时**：10 分钟 0 秒', result.stdout)
+        self.assertIn('**本轮归档结束时间**：2020-01-01 10:25:00+08:00', result.stdout)
+        data = self.show()
+        self.assertEqual(data['stages'][0], first_run)
+        self.assertEqual(data['stages'][-1]['started_at'], restarted)
+        self.assertEqual(data['stages'][-1]['finished_at'], ended)
+        self.assertEqual(data['total_duration_seconds'], 600)
+
+    def test_multiple_completed_runs_do_not_claim_terminated_runs(self):
+        self.complete_four()
+        self.finished_report()
+        self.progress('enter', '--stage', '4', '--new-run', '--at', '2020-01-01T10:20:00+08:00',
+                      '--closure', json.dumps(self.closure))
+        self.complete_four(at='2020-01-01T10:24:00+08:00')
+        result = self.finished_report(at='2020-01-01T10:25:00+08:00')
+        self.assertIn('**4归档**：累计 10 分钟 0 秒，共 2 轮', result.stdout)
+        self.assertNotIn('含已终止轮次', result.stdout)
+
+    def test_single_run_normalizes_end_offset_without_changing_stored_time(self):
+        self.complete_four()
+        ended = '2020-01-01T02:05:00+00:00'
+        result = self.finished_report(at=ended)
+        self.assertIn('**4归档**：5 分钟 0 秒', result.stdout)
+        self.assertNotIn('共 1 轮', result.stdout)
+        self.assertIn('**归档开始时间**：2020-01-01 10:00:00+08:00', result.stdout)
+        self.assertIn('**归档结束时间**：2020-01-01 10:05:00+08:00', result.stdout)
+        self.assertEqual(self.show()['stages'][0]['finished_at'], ended)
+
     def test_report_uses_whole_task_summary_after_discussion_and_preserves_initial_summary(self):
         initial_summary = '讨论移除 readConfirmedSessionState；只讨论、不修改业务代码'
         whole_task_summary = '移除 readConfirmedSessionState 及重复控制状态，保留必要行为并交付实现与验证结果'

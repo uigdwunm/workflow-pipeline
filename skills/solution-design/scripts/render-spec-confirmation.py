@@ -73,9 +73,7 @@ def render_spec_confirmation(summary, artifacts, confirmation_items, recommendat
     artifact_list = "\n".join(f"- {artifact_link(artifact)}" for artifact in artifacts)
     return f"""**状态：整体任务尚未完成，等待 Spec 确认**
 
-我已生成 Spec 阶段产物，后续流程尚未完成。
-
-本次报告需要你检查 Spec 是否符合已明确的方案目标、范围、约束和决策，提出修改意见或确认通过，并决定是否需要拆分 Tickets。
+请检查以下 Spec 是否符合已明确的目标、范围、约束和决策，提出修改意见或确认通过，并决定是否需要拆分 Tickets。
 
 判断是否拆分 Tickets 时，根据已生成的 Spec，结合工作量、是否包含需要分别交付和验收的部分，以及实施依赖关系进行判断。
 
