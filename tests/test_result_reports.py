@@ -11,16 +11,13 @@ SUMMARY = "已确认的本次成果"
 PROFILES = (
     ("design-discussion", "next-skill-available", "2方案", "[]",
      ["--recommended-stage", "2", "--recommendation", "需要制定方案"],
-     "**2方案、3实现和4归档**"),
+     "**2方案和3实现**"),
     ("design-discussion", "next-skill-available", "3实现", "[]",
      ["--recommended-stage", "3", "--recommendation", "已确认的小改动"],
-     "**3实现和4归档**"),
+     "**3实现**"),
     ("solution-design", "implementation-skill-available", "3实现",
      json.dumps([{"name": "Spec", "location": "/project/spec.md"}]), [],
-     "**3实现** 和 **4归档**"),
-    ("guided-implementation", "closure-skill-available", "4归档",
-     json.dumps([{"name": "集成 Worktree", "location": "/project/worktree"}]), [],
-     "**4归档**"),
+     "**3实现**"),
 )
 
 
@@ -91,7 +88,7 @@ class ResultReportTests(unittest.TestCase):
                 self.assertEqual(result.stdout, "")
                 self.assertIn("--" + profile[1], result.stderr)
 
-    def test_empty_artifacts_remain_valid_only_for_design_discussion(self):
+    def test_handoff_report_empty_artifacts_are_valid_only_for_design_discussion(self):
         for profile in PROFILES:
             with self.subTest(skill=profile[0], stage=profile[2]):
                 result = self.run_report(profile, "false", "unknown", artifacts="[]")

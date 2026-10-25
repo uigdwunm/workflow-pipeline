@@ -13,8 +13,8 @@ from urllib.parse import quote, urlsplit
 STAGE_NAMES = {"2": "2方案", "3": "3实现"}
 STAGE_SKILLS = {"2": "solution-design", "3": "guided-implementation"}
 CONTINUOUS_STAGES = {
-    "2": "**2方案、3实现和4归档**",
-    "3": "**3实现和4归档**",
+    "2": "**2方案和3实现**",
+    "3": "**3实现**",
 }
 
 

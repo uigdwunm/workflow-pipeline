@@ -2,18 +2,19 @@
 
 当前版本：**v2.0.1** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v2.0.1)
 
-四个可独立调用、按需衔接的工程工作流 Skill，覆盖需求澄清、技术方案、实现与归档。
+三个可独立调用、按需衔接的工程工作流 Skill，覆盖需求澄清、技术方案、实现与归档。
 
 | 阶段 | Skill | 职责 |
 | --- | --- | --- |
 | 1拷问 | [`design-discussion`](skills/design-discussion/SKILL.md) | 澄清想法、查漏补缺，形成用户确认的理解及必要的测试范围。 |
 | 2方案 | [`solution-design`](skills/solution-design/SKILL.md) | 根据已确认需求生成 Spec 和必要的 Tickets，明确设计取舍与验收方式。 |
-| 3实现 | [`guided-implementation`](skills/guided-implementation/SKILL.md) | 按 Spec 或小改动路径完成实现、审查、整改和提交。 |
-| 4归档 | [`change-closure`](skills/change-closure/SKILL.md) | 完成交付、文档和项目状态收尾，清理任务资源并生成结果报告。 |
+| 3实现 | [`guided-implementation`](skills/guided-implementation/SKILL.md) | 按 Spec 或小改动路径完成实现、验收整改、文档收尾、交付、项目状态更新、资源清理和最终报告。 |
 
 可以从符合当前任务状态的阶段进入；后续衔接遵循用户的实际决定和连续模式要求。各阶段沿用同一份临时进度文件，交接时核对真实成果和仍有效的确认依据。
 
-方案和实现在独立任务 Worktree 中开展，保留用户常用工作区的分支与编辑器选择。归档核实实际交付结果后，主动清理已交付且不再使用的临时分支，包括子 Agent 分支；托管 Worktree 的归档和移除交给宿主处理。
+归档属于 3实现的内部收尾。实现验收通过后继续交付和收尾，不再单独询问是否进入归档阶段；具体操作仍遵守已有授权和项目约定。
+
+方案和实现在独立任务 Worktree 中开展，保留用户常用工作区的分支与编辑器选择。3实现核实实际交付结果后，主动清理已交付且不再使用的临时分支，包括子 Agent 分支；托管 Worktree 的归档和移除交给宿主处理。
 
 v2.0.0 重写了 v1.x 工作流，`1拷问` 由 `design-discussion` 承担，发布包不再包含 `problem-framing`，也不提供旧 runner 或运行记录的自动迁移。旧任务需保留原安装和现场，按对应旧版本处理；旧版源码及更新记录可从 [v1.2.2](https://github.com/uigdwunm/workflow-pipeline/tree/v1.2.2) 查阅。
 
@@ -34,16 +35,15 @@ python3 scripts/prepare-deployment.py verify --package /tmp/workflow-pipeline-ca
 
 每个命令成功时输出 JSON，退出码为 0；检查或生成失败为 1，参数错误为 2。生成失败时可能保留不完整的候选目录，需检查原因并使用新的输出位置；已有目录不会被覆盖。
 
-候选包包含 `manifest.json` 和以下四个独立目录，每个目录保留实际资源和文件权限，并附带 MIT LICENSE：
+候选包包含 `manifest.json` 和以下三个独立目录，每个目录保留实际资源和文件权限，并附带 MIT LICENSE：
 
 | 候选路径 | 阶段 |
 | --- | --- |
 | `skills/design-discussion` | 1拷问 |
 | `skills/solution-design` | 2方案 |
 | `skills/guided-implementation` | 3实现 |
-| `skills/change-closure` | 4归档 |
 
-`problem-framing` 不在本次候选中；占位文件和 Python 缓存也不打包。脚本检查 YAML 元数据、Python 语法和包内文件引用，拒绝软链接资源。`verify` 还检查文件增加、删除、内容、权限及清单是否一致。它不会执行候选脚本、查询宿主 Skill 登记、检查目标项目的配置，或运行完整工作流。
+`problem-framing` 和 `change-closure` 不在本次候选中；占位文件和 Python 缓存也不打包。脚本检查 YAML 元数据、Python 语法和包内文件引用，拒绝软链接资源。`verify` 还检查文件增加、删除、内容、权限及清单是否一致。它不会执行候选脚本、查询宿主 Skill 登记、检查目标项目的配置，或运行完整工作流。
 
 清单记录 Git 提交及工作区是否有改动、实际 Skill 元数据、调用策略、直接依赖、可选阶段交接、项目配置要求和逐文件哈希。未提交的内容也可以打包，实际候选文件及其哈希才是本次交付依据。直接依赖与交接声明维护在脚本的 `SKILLS` 中；修改 Skill 的依赖时同步更新，并由 manager 对照候选正文核实条件性依赖。
 
@@ -57,9 +57,9 @@ python3 scripts/prepare-deployment.py verify --package /tmp/workflow-pipeline-ca
 $codex-manager 在本机部署
 ```
 
-收到这个明确请求时，manager 以本仓库当前工作区中的四个新版 Skill 为候选来源，核实本机安装和登记，保持已有项目使用范围。在其更新流程的候选准备步骤，自行调用 `check`、`build` 和 `verify`；输出目录选在已有父目录下的一个尚不存在的绝对路径。用户已指定候选包时，先复核该包再按指定来源处理。
+收到这个明确请求时，manager 以本仓库当前工作区中的三个新版 Skill 为候选来源，核实本机安装和登记，保持已有项目使用范围。在其更新流程的候选准备步骤，自行调用 `check`、`build` 和 `verify`；输出目录选在已有父目录下的一个尚不存在的绝对路径。用户已指定候选包时，先复核该包再按指定来源处理。
 
-本机安装、备份、数据库、组件登记和项目入口仍由 manager 管理，并遵循适用的授权要求。本次候选不包含 `problem-framing`；旧版依赖关系妨碍接受新版时，报告具体影响并等待处理决定。
+本机安装、备份、数据库、组件登记和项目入口仍由 manager 管理，并遵循适用的授权要求。本次候选不包含 `problem-framing` 和 `change-closure`。本机旧 `change-closure` 的安装、登记及相关引用由 manager 在更新流程中核实处理，候选包排除不代表本机自动卸载。旧版依赖关系妨碍接受新版时，报告具体影响并等待处理决定。
 
 manager 可以把包中每个 `candidate_source` 解析为绝对目录，使用现有入口逐项检查，例如：
 

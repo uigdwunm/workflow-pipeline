@@ -1,4 +1,4 @@
 interface:
   display_name: "3实现"
-  short_description: "根据 Spec 或小改动要求完成实现、审查、整改和提交，并交接至4归档"
-  default_prompt: "使用 $guided-implementation，根据本次 Spec 或小改动要求完成实现、审查、整改和提交，为4归档交付实现成果。"
+  short_description: "根据 Spec 或小改动要求完成实现、验收整改、交付和归档收尾"
+  default_prompt: "使用 $guided-implementation，根据本次 Spec 或小改动要求完成实现、验收整改、交付、项目状态更新、资源清理和最终报告。"

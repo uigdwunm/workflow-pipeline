@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # coding: utf-8
-"""检查、打包并复核交给 codex-manager 的四个新版 Skill；不执行安装。"""
+"""检查、打包并复核交给 codex-manager 的三个新版 Skill；不执行安装。"""
 
 import argparse
 import ast
@@ -43,15 +43,13 @@ SKILLS = {
             "implement": "没有 Spec 的小改动实现路径",
             "tdd": "Spec 路径，或小改动路径需要使用 TDD 时",
         },
-        "handoff_skills": ["solution-design", "change-closure"],
-        "dependency_files": ["SKILL.md", "references/completion.md"],
+        "handoff_skills": ["solution-design"],
+        "dependency_files": [
+            "SKILL.md",
+            "references/spec-execution.md",
+            "references/small-change-execution.md",
+        ],
         "project_requirements": ["docs/agents/issue-tracker.md"],
-    },
-    "change-closure": {
-        "stage": "4",
-        "required_skills": [],
-        "handoff_skills": [],
-        "project_requirements": [],
     },
 }
 CHECKS = ["skill_metadata", "agents_metadata", "python_syntax", "local_references"]
@@ -246,7 +244,7 @@ def prepare(repository):
         "schema_version": 1,
         "source": git_source(repository),
         "skills": skills,
-        "excluded_skills": ["problem-framing"],
+        "excluded_skills": ["problem-framing", "change-closure"],
         "validation": {"status": "passed", "checks": CHECKS, "workflow_execution": "not_run"},
     }
     return manifest, snapshots
@@ -266,11 +264,11 @@ def verify(package):
         raise DeploymentError("候选清单 schema_version 必须是 1")
     skills_root = package / "skills"
     if skills_root.is_symlink() or not skills_root.is_dir() or {p.name for p in skills_root.iterdir()} != set(SKILLS):
-        raise DeploymentError("候选包必须且只能包含四个已选择的 Skill")
+        raise DeploymentError("候选包必须且只能包含三个已选择的 Skill")
     actual = [inspect_skill(name, collect_files(skills_root / name, exclude_generated=False)) for name in SKILLS]
     if manifest.get("skills") != actual:
         raise DeploymentError("候选包内容、文件权限或元数据与 manifest.json 不一致")
-    if manifest.get("excluded_skills") != ["problem-framing"] or manifest.get("validation") != {
+    if manifest.get("excluded_skills") != ["problem-framing", "change-closure"] or manifest.get("validation") != {
         "status": "passed", "checks": CHECKS, "workflow_execution": "not_run",
     }:
         raise DeploymentError("候选清单的选择范围或验证声明不一致")
@@ -332,7 +330,7 @@ def report(manifest, package=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("check", help="只读检查当前仓库的四个 Skill")
+    commands.add_parser("check", help="只读检查当前仓库的三个 Skill")
     build_parser = commands.add_parser("build", help="生成新候选目录，不覆盖已有文件")
     build_parser.add_argument("--output", required=True, type=Path)
     verify_parser = commands.add_parser("verify", help="独立复核候选包及清单，不执行 Skill")

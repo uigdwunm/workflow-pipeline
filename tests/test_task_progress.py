@@ -13,7 +13,7 @@ from unittest import mock
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-SKILLS = ('design-discussion', 'solution-design', 'guided-implementation', 'change-closure')
+SKILLS = ('design-discussion', 'solution-design', 'guided-implementation')
 SCRIPTS = [REPOSITORY / 'skills' / skill / 'scripts/task-progress.py' for skill in SKILLS]
 SPEC = importlib.util.spec_from_file_location('task_progress', SCRIPTS[0])
 progress = importlib.util.module_from_spec(SPEC)
@@ -52,11 +52,72 @@ class TaskProgressTests(unittest.TestCase):
         return json.loads(result.stdout)
 
     def complete(self, stage, number, at, note=None, **kwargs):
-        return self.run_cli('complete', '--stage', stage, '--step', str(number), '--at', at,
-                            '--note', note or '已完成步骤 ' + str(number), **kwargs)
+        return self.run_cli('complete', '--stage', stage, '--steps', json.dumps([{'step': number, 'at': at, 'note': note or '已完成步骤 ' + str(number)}]), **kwargs)
 
     def show(self, **kwargs):
         return json.loads(self.run_cli('show', **kwargs).stdout)
+
+    def test_batch_records_individual_times_and_closes_on_final_step(self):
+        entries = [{'step': number, 'note': f'完成 {number}',
+                    'at': f'2020-01-01T10:0{number}:00+08:00'} for number in range(1, 5)]
+        result = json.loads(self.run_cli('complete', '--stage', '2', '--steps', json.dumps(entries)).stdout)
+        phase = self.show()['stages'][0]
+        self.assertEqual([item['note'] for item in phase['steps']], [item['note'] for item in entries])
+        self.assertEqual([item['finished_at'] for item in phase['steps']], [item['at'] for item in entries])
+        self.assertEqual(result['status'], '已完成')
+        self.assertEqual(result['finished_at'], entries[-1]['at'])
+        before = self.file.read_bytes()
+        for entry in entries:
+            entry['at'] = '2020-01-01T10:10:00+08:00'
+        self.run_cli('complete', '--stage', '2', '--steps', json.dumps(entries))
+        self.assertEqual(self.file.read_bytes(), before)
+
+    def test_batch_default_time_is_shared_and_existing_records_can_be_retried(self):
+        entries = [{'step': 1, 'note': '准备完成'}, {'step': 2, 'note': '实现完成'}]
+        self.run_cli('complete', '--stage', '2', '--steps', json.dumps(entries))
+        first = self.show()['stages'][0]['steps']
+        self.assertEqual(first[0]['finished_at'], first[1]['finished_at'])
+        before = self.file.read_bytes()
+        self.run_cli('complete', '--stage', '2', '--steps', json.dumps(entries))
+        self.assertEqual(self.file.read_bytes(), before)
+        entries.append({'step': 3, 'note': '验收完成'})
+        self.run_cli('complete', '--stage', '2', '--steps', json.dumps(entries))
+        self.assertEqual(self.show()['stages'][0]['steps'][:2], first)
+
+    def test_invalid_batch_preserves_all_records(self):
+        first = {'step': 1, 'note': '完成', 'at': '2020-01-01T10:02:00+08:00'}
+        invalid = [
+            [], {}, None, [None], [1], [{'step': 1}],
+            [{'step': True, 'note': '完成'}], [{'step': 1.0, 'note': '完成'}],
+            [{'step': '1', 'note': '完成'}], [{'step': 1, 'note': 1}],
+            [dict(first, extra='未知字段')], [dict(first, at=None)],
+            [first, first], [first, {'step': 3, 'note': '跳步'}],
+            [{'step': 2, 'note': '乱序'}, first],
+            [first, {'step': 2, 'note': ''}],
+            [first, {'step': 2, 'note': '完成', 'at': '2020-01-01T10:01:00+08:00'}],
+            [first, {'step': 2, 'note': '完成', 'at': '2999-01-01T00:00:00Z'}],
+        ]
+        for entries in invalid:
+            with self.subTest(entries=entries):
+                self.assert_rejected_without_change('complete', '--stage', '2', '--steps', json.dumps(entries))
+        self.assert_rejected_without_change('complete', '--stage', '2', '--steps', '[invalid')
+        self.run_cli('complete', '--stage', '2', '--steps', json.dumps([first]))
+        self.assert_rejected_without_change('complete', '--stage', '2', '--steps', json.dumps([
+            dict(first, note='不同结果'), {'step': 2, 'note': '完成'}]))
+
+    def test_failed_batch_does_not_mutate_in_memory_state(self):
+        data = progress.read_document(self.file)
+        original = deepcopy(data)
+        with self.assertRaises(progress.ProgressError):
+            progress.complete_steps(data, '2', [{'step': 1, 'note': '完成'}, {'step': 3, 'note': '跳步'}])
+        self.assertEqual(data, original)
+
+    def test_complete_rejects_retired_single_step_options(self):
+        self.assert_rejected_without_change('complete', '--stage', '2', '--step', '1', '--note', '完成')
+        entries = json.dumps([{'step': 1, 'note': '完成'}])
+        self.assert_rejected_without_change('complete', '--stage', '2', '--step', entries)
+        self.assert_rejected_without_change('complete', '--stage', '2', '--steps', entries, '--note', '完成')
+        self.assert_rejected_without_change('complete', '--stage', '2', '--steps', entries, '--at', START)
 
     def finish_all(self, stage='2', script=None, minute=1):
         results = []
@@ -96,7 +157,7 @@ class TaskProgressTests(unittest.TestCase):
                 '--summary', summary, '--stage', stage)
 
     def test_each_stage_can_be_first_and_unused_stages_are_absent(self):
-        for index, stage in enumerate(('1', '2', '3', '4')):
+        for index, stage in enumerate(('1', '2', '3')):
             with self.subTest(stage=stage):
                 self.file = self.root / (stage + '.md')
                 self.task_id = self.create(stage, script=SCRIPTS[index])['task_id']
@@ -105,6 +166,36 @@ class TaskProgressTests(unittest.TestCase):
                 self.assertEqual([item['stage'] for item in data['stage_durations']], [stage])
                 self.assertEqual(len(data['stages'][0]['steps']), len(progress.STEPS[stage]))
                 self.assertEqual(data['total_duration_seconds'], 60)
+
+    def test_removed_stage_is_rejected_without_creating_or_changing_progress(self):
+        for index, script in enumerate(SCRIPTS):
+            with self.subTest(skill=SKILLS[index]):
+                output = self.root / f'rejected-stage-{index}.md'
+                self.run_cli('create', '--output', str(output), '--project', str(self.project),
+                             '--summary', self.summary, '--stage', '4', script=script, success=False)
+                self.assertFalse(output.exists())
+                self.assertFalse(output.with_name(output.name + '.lock').exists())
+                self.assert_rejected_without_change('enter', '--stage', '4', script=script)
+
+    def test_implementation_ends_only_after_eighth_step(self):
+        self.file = self.root / 'implementation-progress.md'
+        self.task_id = self.create('3', script=SCRIPTS[2])['task_id']
+        for number in range(1, 9):
+            at = f'2020-01-01T10:{number:02d}:00+08:00'
+            result = json.loads(self.complete('3', number, at, script=SCRIPTS[2]).stdout)
+            if number < 8:
+                self.assertEqual(result['status'], '进行中')
+                self.assertIsNone(result['finished_at'])
+                self.assertEqual(result['next_step']['id'], f'3.{number + 1}')
+            else:
+                self.assertEqual(result['status'], '已完成')
+                self.assertEqual(result['finished_at'], at)
+                self.assertIsNone(result['next_step'])
+            if number in (4, 7):
+                self.assert_rejected_without_change('cleanup', '--task-finished', script=SCRIPTS[2])
+        data = self.show(script=SCRIPTS[0])
+        self.assertEqual(len(data['stages'][0]['steps']), 8)
+        self.assertEqual(data['total_duration_seconds'], 480)
 
     def test_one_completion_adds_one_row_and_advances_next_step(self):
         result = json.loads(self.complete('2', 1, '2020-01-01T10:02:00+08:00', '工作区已核对').stdout)
@@ -139,7 +230,7 @@ class TaskProgressTests(unittest.TestCase):
         self.complete('2', 1, '2020-01-01T10:10:00+08:00', '工作区已核对')
         self.run_cli('enter', '--stage', '2', '--at', '2020-01-01T10:12:00+08:00')
         self.assertEqual(self.file.read_bytes(), before)
-        self.assert_rejected_without_change('complete', '--stage', '2', '--step', '1', '--note', '不同结果')
+        self.assert_rejected_without_change('complete', '--stage', '2', '--steps', json.dumps([{'step': 1, 'note': '不同结果'}]))
         for number in range(2, 5):
             self.complete('2', number, '2020-01-01T10:15:00+08:00')
         before = self.file.read_bytes()
@@ -147,10 +238,10 @@ class TaskProgressTests(unittest.TestCase):
         self.assertEqual(self.file.read_bytes(), before)
 
     def test_invalid_steps_or_results_do_not_change_file(self):
-        for number in ('0', '-1', '2', '5', '2.1.1'):
-            self.assert_rejected_without_change('complete', '--stage', '2', '--step', number, '--note', '完成')
+        for number in (0, -1, 2, 5, '2.1.1'):
+            self.assert_rejected_without_change('complete', '--stage', '2', '--steps', json.dumps([{'step': number, 'note': '完成'}]))
         for note in ('', '  ', '结果\n换行', '结果\x1b控制符'):
-            self.assert_rejected_without_change('complete', '--stage', '2', '--step', '1', '--note', note)
+            self.assert_rejected_without_change('complete', '--stage', '2', '--steps', json.dumps([{'step': 1, 'note': note}]))
 
     def test_unicode_line_separators_are_rejected_before_creating_progress(self):
         before = self.file.read_bytes()
@@ -178,8 +269,7 @@ class TaskProgressTests(unittest.TestCase):
                 values = (separator + '已核对', '已核对' + separator + '续行', '已核对' + separator)
                 for position, note in enumerate(values):
                     with self.subTest(skill=index, codepoint=hex(codepoint), position=position):
-                        result = self.run_cli('complete', '--stage', '2', '--step', '1', '--note', note,
-                                              script=script, success=False)
+                        result = self.run_cli('complete', '--stage', '2', '--steps', json.dumps([{'step': 1, 'note': note}]), script=script, success=False)
                         self.assertIn('单行文本', result.stderr)
                         self.assertEqual(self.file.read_bytes(), before)
                         self.assertFalse(self.file.with_name(self.file.name + '.lock').exists())
@@ -188,13 +278,12 @@ class TaskProgressTests(unittest.TestCase):
 
     def test_invalid_times_and_backdated_completion_do_not_change_file(self):
         for at in ('2020-01-01T09:59:00+08:00', '2020-01-01T10:01:00', '2999-01-01T00:00:00Z'):
-            self.assert_rejected_without_change('complete', '--stage', '2', '--step', '1', '--note', '完成', '--at', at)
+            self.assert_rejected_without_change('complete', '--stage', '2', '--steps', json.dumps([{'step': 1, 'note': '完成', 'at': at}]))
         self.complete('2', 1, '2020-01-01T10:02:00+08:00')
-        self.assert_rejected_without_change('complete', '--stage', '2', '--step', '2', '--note', '完成',
-                                           '--at', '2020-01-01T10:01:00+08:00')
+        self.assert_rejected_without_change('complete', '--stage', '2', '--steps', json.dumps([{'step': 2, 'note': '完成', 'at': '2020-01-01T10:01:00+08:00'}]))
 
     def test_default_time_is_persisted_without_model_timestamp(self):
-        result = json.loads(self.run_cli('complete', '--stage', '2', '--step', '1', '--note', '工作区已核对').stdout)
+        result = json.loads(self.run_cli('complete', '--stage', '2', '--steps', json.dumps([{'step': 1, 'note': '工作区已核对'}])).stdout)
         item = self.show()['stages'][0]['steps'][0]
         self.assertIsNotNone(progress.timestamp(item['finished_at']).utcoffset())
         self.assertEqual(result['last_completed_step'], item['id'])
@@ -202,9 +291,9 @@ class TaskProgressTests(unittest.TestCase):
     def test_handoff_keeps_same_file_and_excludes_between_stage_wait(self):
         self.finish_all(minute=5)
         self.run_cli('enter', '--stage', '3', '--at', '2020-01-01T02:20:00Z', script=SCRIPTS[2])
-        for number in range(1, 5):
+        for number in range(1, 9):
             self.complete('3', number, '2020-01-01T02:24:00+00:00', script=SCRIPTS[2])
-        data = self.show(script=SCRIPTS[3])
+        data = self.show(script=SCRIPTS[1])
         self.assertEqual(data['task_id'], self.task_id)
         self.assertEqual([item['duration_seconds'] for item in data['stage_durations']], [300, 240])
         self.assertEqual(data['total_duration_seconds'], 540)
@@ -276,31 +365,44 @@ class TaskProgressTests(unittest.TestCase):
         self.task_id = self.create('3', script=SCRIPTS[2])['task_id']
         for number in range(1, 4):
             self.complete('3', number, '2020-01-01T10:05:00+08:00', script=SCRIPTS[2])
+        closure = {
+            'worktree': str(self.project), 'branch': 'codex/config-validation',
+            'target_branch': 'main', 'implementation_commit': 'abcdef1',
+            'artifacts': [{'name': '目标项目', 'location': str(self.project)}],
+        }
+        self.run_cli('enter', '--stage', '3', '--closure', json.dumps(closure), script=SCRIPTS[2])
+        for number in range(4, 8):
+            self.complete('3', number, '2020-01-01T10:06:00+08:00', script=SCRIPTS[2])
         before = self.file.read_bytes()
         saved_start = self.show(script=SCRIPTS[2])['stages'][0]['started_at']
+        generated_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
         arguments = [
             sys.executable, '-B', str(REPOSITORY / 'skills/guided-implementation/scripts/render-result.py'),
-            '--summary', '配置校验实现、验证及审查已完成，集成提交待归档',
-            '--artifacts', json.dumps([{'name': '集成 Worktree', 'location': str(self.project)}]),
-            '--started-at', saved_start, '--continuous-mode', 'false', '--closure-skill-available',
+            '--file', str(self.file), '--task-id', self.task_id, '--project', str(self.project),
+            '--summary', '配置校验实现、验证、交付及资源清理已完成',
+            '--artifacts', json.dumps([{'name': '目标项目', 'location': str(self.project)}]),
+            '--delivery-method', '本地合并', '--at', generated_at, '--complete', '--pending',
         ]
-        failed = subprocess.run(arguments + ['invalid'], capture_output=True, text=True, encoding='utf-8')
+        failed = subprocess.run(arguments + ['仍有待核实事项'], capture_output=True, text=True, encoding='utf-8')
         self.assertNotEqual(failed.returncode, 0)
         self.assertEqual(failed.stdout, '')
         self.assertEqual(self.file.read_bytes(), before)
         self.assertIsNone(self.show(script=SCRIPTS[2])['stages'][0]['finished_at'])
-        report = subprocess.run(arguments + ['true'], capture_output=True, text=True, encoding='utf-8')
+        report = subprocess.run(arguments + ['无'], capture_output=True, text=True, encoding='utf-8')
         self.assertEqual(report.returncode, 0, report.stderr)
-        self.assertTrue(report.stdout.strip())
-        generated_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
-        receipt = json.loads(self.complete('3', 4, generated_at, '实现报告已生成，归档资料已准备', script=SCRIPTS[2]).stdout)
+        self.assertIn('**3实现已完成**', report.stdout)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.assertIsNone(self.show(script=SCRIPTS[2])['stages'][0]['finished_at'])
+        receipt = json.loads(self.complete('3', 8, generated_at, '最终报告已生成并保留', script=SCRIPTS[2]).stdout)
         self.assertEqual(receipt['status'], '已完成')
         phase = self.show(script=SCRIPTS[2])['stages'][0]
         self.assertEqual(phase['started_at'], saved_start)
         self.assertEqual(phase['finished_at'], generated_at)
         self.assertEqual(phase['steps'][-1]['finished_at'], generated_at)
-        self.run_cli('enter', '--stage', '4', script=SCRIPTS[3])
-        self.assertEqual(self.show(script=SCRIPTS[3])['stages'][0], phase)
+        self.complete('3', 8, datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                      '最终报告已生成并保留', script=SCRIPTS[2])
+        for script in SCRIPTS:
+            self.assertEqual(self.show(script=script)['stages'][0], phase)
 
     def test_stop_requires_reason_and_does_not_rewrite_closed_stage(self):
         self.assert_rejected_without_change('stop', '--stage', '2', '--note', '')
@@ -310,7 +412,7 @@ class TaskProgressTests(unittest.TestCase):
         self.run_cli('stop', '--stage', '2', '--note', '取消', '--at', '2020-01-01T10:10:00+08:00')
         self.assertEqual(self.file.read_bytes(), before)
         self.assert_rejected_without_change('stop', '--stage', '2', '--note', '其他原因')
-        self.assert_rejected_without_change('complete', '--stage', '2', '--step', '1', '--note', '完成')
+        self.assert_rejected_without_change('complete', '--stage', '2', '--steps', json.dumps([{'step': 1, 'note': '完成'}]))
 
     def test_completed_stage_cannot_be_reclassified_as_cancelled(self):
         self.finish_all()
@@ -320,7 +422,7 @@ class TaskProgressTests(unittest.TestCase):
         other = self.root / 'other-project'
         other.mkdir()
         for kwargs in ({'task_id': 'another-task'}, {'project': other}):
-            self.assert_rejected_without_change('complete', '--stage', '2', '--step', '1', '--note', '完成', **kwargs)
+            self.assert_rejected_without_change('complete', '--stage', '2', '--steps', json.dumps([{'step': 1, 'note': '完成'}]), **kwargs)
 
     def test_markdown_special_characters_roundtrip_as_plain_text(self):
         special = r'路径含 |、[括号]、\、`代码`、<标签> 与 # 标题'
@@ -342,7 +444,7 @@ class TaskProgressTests(unittest.TestCase):
                           original.replace(progress.escape(self.task_id), 'invalid-id')):
             with self.subTest(corrupted=corrupted):
                 self.file.write_text(corrupted, encoding='utf-8')
-                self.assert_rejected_without_change('complete', '--stage', '2', '--step', '1', '--note', '完成')
+                self.assert_rejected_without_change('complete', '--stage', '2', '--steps', json.dumps([{'step': 1, 'note': '完成'}]))
                 self.assert_rejected_without_change('cleanup', '--task-finished')
         self.file.write_text(original, encoding='utf-8')
 
@@ -354,7 +456,7 @@ class TaskProgressTests(unittest.TestCase):
         destination = self.root / 'external.md'
         destination.write_bytes(original)
         self.file.symlink_to(destination)
-        self.run_cli('complete', '--stage', '2', '--step', '1', '--note', '完成', success=False)
+        self.run_cli('complete', '--stage', '2', '--steps', json.dumps([{'step': 1, 'note': '完成'}]), success=False)
         self.run_cli('cleanup', '--task-finished', success=False)
         self.assertEqual(destination.read_bytes(), original)
         self.assertTrue(self.file.is_symlink())
@@ -363,11 +465,11 @@ class TaskProgressTests(unittest.TestCase):
         before = self.file.read_bytes()
         lock = self.file.with_name(self.file.name + '.lock')
         lock.mkdir()
-        self.run_cli('complete', '--stage', '2', '--step', '1', '--note', '完成', success=False)
+        self.run_cli('complete', '--stage', '2', '--steps', json.dumps([{'step': 1, 'note': '完成'}]), success=False)
         self.assertEqual(self.file.read_bytes(), before)
         lock.rmdir()
         data = progress.read_document(self.file)
-        progress.complete_step(data, '2', 1, '完成', '2020-01-01T10:01:00+08:00')
+        progress.complete_steps(data, '2', [{'step': 1, 'note': '完成', 'at': '2020-01-01T10:01:00+08:00'}])
         with mock.patch.object(progress.os, 'replace', side_effect=OSError('写入失败')):
             with self.assertRaises(OSError):
                 progress.write_document(self.file, data)

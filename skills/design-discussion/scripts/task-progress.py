@@ -11,24 +11,33 @@ import string
 import tempfile
 import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
 
-STAGES = {"1": "1拷问", "2": "2方案", "3": "3实现", "4": "4归档"}
+STAGES = {"1": "1拷问", "2": "2方案", "3": "3实现"}
 STEPS = {
     "1": ("确认讨论要点", "执行拷问", "验收与交接"),
     "2": ("确定工作区", "生成方案", "验收成果", "报告与交接"),
-    "3": ("准备", "执行实现", "验收与整改", "报告与交接"),
-    "4": ("接收成果", "分支检查与文档收尾", "合并交付", "更新项目状态", "清理与报告"),
+    "3": (
+        "准备",
+        "执行实现",
+        "实现验收与整改",
+        "分支检查与文档收尾",
+        "整合与交付",
+        "更新项目状态",
+        "清理资源",
+        "最终报告",
+    ),
 }
 EMPTY = "—"
 STAGE_COLUMNS = ("阶段", "执行轮次", "状态", "开始时间", "结束时间", "终止原因")
 STEP_COLUMNS = ("编号", "大步骤", "简要结果", "完成时间")
 ARTIFACT_COLUMNS = ("产物", "实际位置")
 CLOSURE_FIELDS = (("worktree", "集成 Worktree"), ("branch", "集成分支"),
-                  ("target_branch", "目标分支"), ("implementation_commit", "待归档实现提交"))
+                  ("target_branch", "目标分支"), ("implementation_commit", "已验收实现提交"))
 
 class ProgressError(ValueError):
     pass
@@ -182,7 +191,7 @@ def render(data):
         ]))
     for phase in data["stages"]:
         if "closure" in phase:
-            lines.extend(["", f"## 4归档输入（第 {phase['run']} 次）", ""])
+            lines.extend(["", f"## 3实现归档输入（第 {phase['run']} 次）", ""])
             lines.extend(f"- {label}：{escape(phase['closure'][key])}" for key, label in CLOSURE_FIELDS)
             lines.extend(["", row(ARTIFACT_COLUMNS), row(["---"] * len(ARTIFACT_COLUMNS))])
             lines.extend(row([escape(item["name"]), escape(item["location"])])
@@ -208,10 +217,12 @@ def validate(data):
     for position, phase in enumerate(data["stages"]):
         stage = phase["stage"]
         if stage not in STAGES:
-            raise ProgressError("阶段必须是 1、2、3 或 4")
+            raise ProgressError("阶段必须是 1、2 或 3")
         if "closure" in phase:
-            if stage != "4" or closure_input(phase["closure"]) != phase["closure"]:
-                raise ProgressError("归档输入只能记录在 4归档，且须符合固定格式")
+            if stage != "3" or closure_input(phase["closure"]) != phase["closure"]:
+                raise ProgressError("归档输入只能记录在 3实现，且须符合固定格式")
+            if len(phase["steps"]) < 3:
+                raise ProgressError("3实现须完成前三个大步骤后才能保存归档输入")
         runs[stage] = runs.get(stage, 0) + 1
         if phase["run"] != runs[stage]:
             raise ProgressError("阶段执行轮次不连续")
@@ -295,9 +306,9 @@ def parse_document(content):
             "finished_at": None if finish == EMPTY else finish, "note": unescape(note), "steps": [],
         })
     for phase in data["stages"]:
-        if position + 1 < len(lines) and lines[position + 1] == f"## 4归档输入（第 {phase['run']} 次）":
+        if position + 1 < len(lines) and lines[position + 1] == f"## 3实现归档输入（第 {phase['run']} 次）":
             expect("")
-            expect(f"## 4归档输入（第 {phase['run']} 次）")
+            expect(f"## 3实现归档输入（第 {phase['run']} 次）")
             expect("")
             phase["closure"] = {key: unescape(field(label)) for key, label in CLOSURE_FIELDS}
             expect("")
@@ -377,8 +388,8 @@ def latest_stage(data, stage):
 
 def enter_stage(data, stage, at, new_run=False, closure=None):
     if closure is not None:
-        if stage != "4":
-            raise ProgressError("归档输入只适用于 4归档")
+        if stage != "3":
+            raise ProgressError("归档输入只适用于 3实现")
         closure = closure_input(closure)
     existing = next((phase for phase in reversed(data["stages"]) if phase["stage"] == stage), None)
     if existing is not None and not new_run:
@@ -399,8 +410,8 @@ def attach_closure(phase, closure):
         if phase["closure"] != closure:
             raise ProgressError("本轮归档已有不同输入，不能覆盖原记录")
         return
-    if phase["steps"] or phase["finished_at"] is not None:
-        raise ProgressError("须在第一个大步骤完成前保存归档输入")
+    if phase["stage"] != "3" or len(phase["steps"]) != 3 or phase["finished_at"] is not None:
+        raise ProgressError("须在 3实现完成第 3 步后、第 4 步完成前首次保存归档输入，且阶段尚未结束")
     phase["closure"] = closure
 
 
@@ -425,23 +436,39 @@ def create_document(path, project, summary, stage, at, closure=None):
         return data
 
 
-def complete_step(data, stage, number, note, at):
-    phase = latest_stage(data, stage)
-    note = text(note, "简要结果")
-    if not 1 <= number <= len(STEPS[stage]):
-        raise ProgressError("只能记录本阶段已有的大步骤")
-    if number <= len(phase["steps"]):
-        if phase["steps"][number - 1]["note"] != note:
-            raise ProgressError("该大步骤已记录不同结果，不能覆盖原记录")
-        return
-    if phase["finished_at"] is not None:
-        raise ProgressError("该阶段已结束；重新执行用 enter --new-run 保留旧记录")
-    if number != len(phase["steps"]) + 1:
-        raise ProgressError("请按实际顺序记录大步骤，不能跳过未完成的步骤")
-    phase["steps"].append({"id": f"{stage}.{number}", "name": STEPS[stage][number - 1],
-                           "note": note, "finished_at": at})
-    if number == len(STEPS[stage]):
-        phase["status"], phase["finished_at"] = "已完成", at
+def complete_steps(data, stage, entries):
+    if not isinstance(entries, list) or not entries:
+        raise ProgressError("步骤记录必须是非空 JSON 列表")
+    candidate = deepcopy(data)
+    phase = latest_stage(candidate, stage)
+    default_time = event_time()
+    previous_number = None
+    for entry in entries:
+        if (not isinstance(entry, dict) or not {"step", "note"} <= entry.keys()
+                or entry.keys() - {"step", "note", "at"}):
+            raise ProgressError("每项步骤记录须包含 step、note，仅可额外提供 at")
+        number = entry["step"]
+        if type(number) is not int or not 1 <= number <= len(STEPS[stage]):
+            raise ProgressError("step 必须是本阶段已有大步骤的整数序号")
+        if previous_number is not None and number != previous_number + 1:
+            raise ProgressError("列表中的步骤须连续递增，不能重复、乱序或跳步")
+        previous_number = number
+        note = text(entry["note"], "简要结果")
+        at = event_time(text(entry["at"], "时间")) if "at" in entry else default_time
+        if number <= len(phase["steps"]):
+            if phase["steps"][number - 1]["note"] != note:
+                raise ProgressError("该大步骤已记录不同结果，不能覆盖原记录")
+            continue
+        if phase["finished_at"] is not None:
+            raise ProgressError("该阶段已结束；重新执行用 enter --new-run 保留旧记录")
+        if number != len(phase["steps"]) + 1:
+            raise ProgressError("请按实际顺序记录大步骤，不能跳过未完成的步骤")
+        phase["steps"].append({"id": f"{stage}.{number}", "name": STEPS[stage][number - 1],
+                               "note": note, "finished_at": at})
+        if number == len(STEPS[stage]):
+            phase["status"], phase["finished_at"] = "已完成", at
+    validate(candidate)
+    data.update(candidate)
 
 
 def stop_stage(data, stage, note, at):
@@ -479,11 +506,11 @@ def compact_result(path, data):
             "next_step": next_step(phase)}
 
 
-def json_object(value):
+def json_value(value):
     try:
         return json.loads(value)
     except json.JSONDecodeError as error:
-        raise argparse.ArgumentTypeError("归档输入必须是有效 JSON") from error
+        raise argparse.ArgumentTypeError("参数必须是有效 JSON") from error
 
 
 def main():
@@ -491,12 +518,12 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     for command, description in (
         ("create", "首次创建文档并进入阶段"), ("enter", "接续或进入下一阶段"),
-        ("complete", "大步骤完成时记录一句结果和时间；最后一步自动结束阶段"),
+        ("complete", "按列表登记一个或多个已完成步骤；最后一步自动结束阶段"),
         ("stop", "明确取消或切换流程时终止阶段，保留已完成步骤"),
         ("show", "恢复任务或生成报告时读取完整记录及阶段耗时"),
         ("cleanup", "整个任务已结束且报告已保留后删除临时进度文档"),
     ):
-        subparser = commands.add_parser(command, help=description)
+        subparser = commands.add_parser(command, help=description, allow_abbrev=command != "complete")
         subparser.add_argument("--project", required=True, help="原目标项目的绝对路径")
         if command == "create":
             subparser.add_argument("--output", required=True, help="进度文档绝对路径，父目录须已存在")
@@ -506,14 +533,17 @@ def main():
             subparser.add_argument("--task-id", required=True, help="创建时返回的固定任务标识")
         if command in {"create", "enter", "complete", "stop"}:
             subparser.add_argument("--stage", required=True, choices=tuple(STAGES))
+        if command in {"create", "enter", "stop"}:
             subparser.add_argument("--at", help="实际事件的 ISO 8601 时间，须有时区；默认取当前时间")
         if command == "enter":
             subparser.add_argument("--new-run", action="store_true", help="明确重新执行已结束阶段时追加一轮")
         if command in {"create", "enter"}:
-            subparser.add_argument("--closure", type=json_object, help="4归档的输入 JSON，保存在同一文件中")
+            subparser.add_argument("--closure", type=json_value,
+                                   help="3实现的归档输入 JSON；第 3 步完成后、第 4 步完成前首次保存到同一文件")
         if command == "complete":
-            subparser.add_argument("--step", required=True, type=int, help="本阶段大步骤序号，例如 1")
-        if command in {"complete", "stop"}:
+            subparser.add_argument("--steps", required=True, type=json_value,
+                                   help="非空 JSON 列表，每项含整数 step、单行 note 及可选的含时区 at")
+        if command == "stop":
             subparser.add_argument("--note", required=True, help="一句结果或终止原因")
         if command == "cleanup":
             subparser.add_argument("--task-finished", action="store_true", required=True)
@@ -531,7 +561,7 @@ def main():
                 if args.command == "enter":
                     enter_stage(data, args.stage, event_time(args.at), args.new_run, args.closure)
                 elif args.command == "complete":
-                    complete_step(data, args.stage, args.step, args.note, event_time(args.at))
+                    complete_steps(data, args.stage, args.steps)
                 elif args.command == "stop":
                     stop_stage(data, args.stage, args.note, event_time(args.at))
                 elif args.command == "cleanup":

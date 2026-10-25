@@ -1,155 +1,149 @@
 #!/usr/bin/env python3
 # coding: utf-8
-"""根据固定参数生成 3实现的 Markdown 结果报告。"""
+"""读取统一进度生成任务结果报告，不修改进度；第 8 步由调用方登记。"""
 
 import argparse
+import importlib.util
 import json
-import string
-from datetime import datetime, timezone
+import sys
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 
-def parse_started_at(value):
-    try:
-        started_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("开始时间必须是 ISO 8601 时间") from error
-    if started_at.utcoffset() is None:
-        raise argparse.ArgumentTypeError("开始时间必须包含时区，例如 +08:00 或 Z")
-    return started_at
-
+sys.dont_write_bytecode = True
+SPEC = importlib.util.spec_from_file_location("task_progress", Path(__file__).with_name("task-progress.py"))
+progress = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(progress)
 
 def parse_artifacts(value):
     try:
-        artifacts = json.loads(value)
-    except json.JSONDecodeError as error:
-        raise argparse.ArgumentTypeError("成果必须是有效的 JSON 数组") from error
-    if not isinstance(artifacts, list) or not artifacts:
-        raise argparse.ArgumentTypeError("成果必须是非空数组")
-
-    for index, artifact in enumerate(artifacts, start=1):
-        if not isinstance(artifact, dict) or set(artifact) != {"name", "location"}:
-            raise argparse.ArgumentTypeError(
-                f"第 {index} 项成果必须包含且仅包含 name 和 location"
-            )
-        for field in ("name", "location"):
-            value = artifact[field]
-            if not isinstance(value, str) or not value.strip():
-                raise argparse.ArgumentTypeError(f"第 {index} 项成果的 {field} 必须是非空文本")
-            if any(ord(char) < 32 or ord(char) == 127 for char in value):
-                raise argparse.ArgumentTypeError(f"第 {index} 项成果的 {field} 必须是单行文本")
-            artifact[field] = value.strip()
-
-        location = artifact["location"]
-        if Path(location).is_absolute():
-            continue
-        try:
-            url = urlsplit(location)
-            hostname = url.hostname
-            url.port
-        except ValueError as error:
-            raise argparse.ArgumentTypeError(f"第 {index} 项成果的链接无效") from error
-        if url.scheme not in ("http", "https") or not hostname or any(char.isspace() for char in hostname):
-            raise argparse.ArgumentTypeError(
-                f"第 {index} 项成果的位置必须是绝对文件路径或 HTTP(S) 链接"
-            )
-    return artifacts
+        return progress.artifacts(json.loads(value))
+    except (json.JSONDecodeError, progress.ProgressError) as error:
+        raise argparse.ArgumentTypeError(f"成果参数无效：{error}") from error
 
 
-def escape_text(value):
-    return "".join("\\" + char if char in string.punctuation else char for char in value)
-
-
-def artifact_link(artifact):
-    location = artifact["location"]
+def artifact_link(item):
+    location = item["location"]
     safe = "/:~@-._" if Path(location).is_absolute() else "/:?#@!$&'*,;=+%-._~"
-    return f"[{escape_text(artifact['name'])}](<{quote(location, safe=safe)}>)"
+    return f"[{progress.escape(item['name'])}](<{quote(location, safe=safe)}>)"
 
 
 def format_duration(seconds):
     days, seconds = divmod(seconds, 86400)
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
-    units = ((days, "天"), (hours, "小时"), (minutes, "分钟"))
-    return " ".join([f"{value} {unit}" for value, unit in units if value] + [f"{seconds} 秒"])
+    units = ((days, "天"), (hours, "小时"), (minutes, "分钟"), (seconds, "秒"))
+    return " ".join(f"{value} {unit}" for value, unit in units if value) or "0 秒"
 
 
-def render_result(summary, artifacts, started_at, continuous_mode,
-                  closure_skill_available, now):
-    duration = int((now - started_at).total_seconds())
-    lines = ["**3实现已完成**", "", "**实现摘要**  "]
-    lines.extend(escape_text(line.strip()) for line in summary.strip().splitlines())
-    lines.extend(["", "**成果**", ""])
-    lines.extend(f"- {artifact_link(artifact)}" for artifact in artifacts)
+def report_durations(data, at, complete):
+    durations = progress.summarize(data)["stage_durations"]
+    for item in durations:
+        active = next((phase for phase in data["stages"]
+                       if phase["stage"] == item["stage"] and phase["finished_at"] is None), None)
+        item["ongoing"] = active is not None and not complete
+        if active is not None:
+            elapsed = int((progress.timestamp(at) - progress.timestamp(active["started_at"])).total_seconds())
+            last_time = active["steps"][-1]["finished_at"] if active["steps"] else active["started_at"]
+            if progress.timestamp(at) < progress.timestamp(last_time):
+                raise progress.ProgressError("报告时间早于当前已记录的进度")
+            item["duration_seconds"] = item["known_duration_seconds"] + elapsed
+    return durations
+
+
+def step_note(phase, number):
+    if len(phase["steps"]) < number:
+        return "尚无完成记录"
+    return progress.escape(phase["steps"][number - 1]["note"])
+
+
+def render_result(data, summary, artifacts, pending, delivery_method, at, complete):
+    phase = data["stages"][-1]
+    state = "已完成" if complete else {"进行中": "未完成", "已终止": "已终止"}[phase["status"]]
+    closure = phase.get("closure", {})
+    lines = [
+        "**本次任务**", "", progress.escape(summary), "",
+        f"**3实现{state}**", "",
+        f"**目标项目**：{artifact_link({'name': data['project'], 'location': data['project']})}",
+        f"**交付方式**：{progress.escape(delivery_method or '尚未核实')}",
+        f"**目标分支**：{progress.escape(closure.get('target_branch', '尚未核实'))}", "",
+        "**实现与验收**", "",
+        f"- **实现结果**：{step_note(phase, 2)}",
+        f"- **验收与整改**：{step_note(phase, 3)}",
+        f"- **已验收实现提交**：{progress.escape(closure.get('implementation_commit', '尚未核实'))}",
+        "", "**交付结果**", "",
+        f"- **分支与文档**：{step_note(phase, 4)}",
+        f"- **整合与交付**：{step_note(phase, 5)}",
+        "", "**项目状态**", "", f"- {step_note(phase, 6)}",
+        "", "**资源处理**", "", f"- {step_note(phase, 7)}",
+    ]
+    lines.extend(["", "**成果位置**", ""])
+    lines.extend(f"- {artifact_link(item)}" for item in artifacts)
+    if not artifacts:
+        lines.append("- 无额外文件或链接")
+    lines.extend(["", "**未完成事项**", "", progress.escape(pending), "", "**阶段用时**", ""])
+    lines.extend(["| 阶段 | 用时 |", "| --- | --- |"])
+    durations = report_durations(data, at, complete)
+    for item in durations:
+        suffix = "（截至本次报告，阶段尚未结束）" if item["ongoing"] else ""
+        duration = format_duration(item["duration_seconds"])
+        if item["runs"] > 1:
+            duration = f"累计 {duration}，共 {item['runs']} 轮"
+            if any(run["stage"] == item["stage"] and run["status"] == "已终止"
+                   for run in data["stages"]):
+                duration += "（含已终止轮次）"
+        lines.append(f"| {item['name']} | {duration}{suffix} |")
+    total = sum(item["duration_seconds"] for item in durations)
     lines.extend([
-        "",
-        f"**开始时间**：{started_at.isoformat(sep=' ', timespec='seconds')}  ",
-        f"**总耗时**：{format_duration(duration)}",
-        "",
-        "---",
-        "",
-        "**下一步**",
-        "",
+        f"| **累计** | **{format_duration(total)}** |", "",
+        "按各阶段起止时间累计，包含阶段内等待，不包含阶段间等待。只展示实际进入过的阶段。",
     ])
-
-    if closure_skill_available is None:
-        lines.append(
-            "**4归档** 对应 Skill 的可用情况尚未核实，交接暂缓。"
-            "进入该流程前需重新核实。"
-        )
-    elif continuous_mode:
-        if closure_skill_available:
-            lines.append("当前是连续模式，下一步将进入 4归档 流程")
-        else:
-            lines.append(
-                "当前是连续模式，但当前环境无法使用 `change-closure`。"
-                "请先检查该 Skill 的安装、启用状态及入口，再进入 4归档 流程。"
-            )
-    elif closure_skill_available:
-        lines.extend([
-            "是否进入 **4归档** 流程？",
-            "",
-            "是否开启**连续模式**？开启后，将自动执行 **4归档**。",
-        ])
-    else:
-        lines.append(
-            "当前环境无法使用 `change-closure`。请先检查该 Skill 的安装、启用状态及入口，再进入 4归档 流程。"
-        )
-
-    return "\n".join("> " + line if line else ">" for line in lines) + "\n"
+    return "\n".join(lines) + "\n"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--summary", required=True, help="本次实现摘要")
-    parser.add_argument(
-        "--artifacts", required=True, type=parse_artifacts,
-        help='成果 JSON 数组，例如 [{"name":"集成 Worktree","location":"/absolute/path/worktree"}]',
-    )
-    parser.add_argument(
-        "--started-at", required=True, type=parse_started_at,
-        help="进入 Skill 时的 ISO 8601 时间，必须包含时区",
-    )
-    parser.add_argument(
-        "--continuous-mode", required=True, choices=("true", "false"),
-        help="当前是否处于连续模式",
-    )
-    parser.add_argument(
-        "--closure-skill-available", required=True, choices=("true", "false", "unknown"),
-        help="change-closure 的可用情况：true 已核实可用，false 已确认不可用，unknown 尚未核实",
-    )
+    parser.add_argument("--file", required=True, help="统一进度文件的绝对路径")
+    parser.add_argument("--task-id", required=True, help="创建时返回的固定任务标识")
+    parser.add_argument("--project", required=True, help="原目标项目的绝对路径")
+    parser.add_argument("--summary", required=True, help="整个任务的目标与最终确认范围，使用非空单行文本")
+    parser.add_argument("--artifacts", required=True, type=parse_artifacts, help="当前实际交付位置的 JSON 数组，允许 []")
+    parser.add_argument("--complete", action="store_true", help="前七步及归档输入已完整记录，生成完成报告；不登记进度")
+    parser.add_argument("--delivery-method", help="已核实的实际交付方式，完成报告必须提供")
+    parser.add_argument("--pending", required=True, help="显式填写未完成和待决事项及接续条件；核实均无后填“无”")
+    parser.add_argument("--at", help="报告采用的含时区 ISO 时间；默认取当前时间，第 8 步登记时沿用")
     args = parser.parse_args()
-    if not args.summary.strip():
-        parser.error("实现摘要不能为空")
-    now = datetime.now(timezone.utc)
-    if args.started_at > now:
-        parser.error("开始时间不能晚于当前时间")
-    print(render_result(
-        args.summary, args.artifacts, args.started_at,
-        args.continuous_mode == "true",
-        {"true": True, "false": False, "unknown": None}[args.closure_skill_available], now,
-    ), end="")
+    try:
+        path = progress.absolute_path(args.file, "进度文档")
+        project = progress.absolute_path(args.project, "目标项目")
+        summary = progress.text(args.summary, "任务描述")
+        pending = progress.text(args.pending, "未完成事项")
+        delivery_method = progress.text(args.delivery_method, "交付方式") if args.delivery_method is not None else None
+        at = progress.event_time(args.at)
+        with progress.lock_document(path):
+            data = progress.read_document(path)
+            progress.match_task(data, args.task_id, project)
+        phase = data["stages"][-1]
+        if phase["stage"] != "3":
+            raise progress.ProgressError("当前阶段不是 3实现")
+        complete = args.complete or phase["status"] == "已完成"
+        if complete:
+            if phase["status"] == "已终止":
+                raise progress.ProgressError("本轮已终止，不能生成已完成报告")
+            if "closure" not in phase or len(phase["steps"]) < 7:
+                raise progress.ProgressError("归档输入及前七个大步骤尚未完整记录")
+            if delivery_method is None:
+                raise progress.ProgressError("完成报告须提供已核实的交付方式")
+            if pending != "无":
+                raise progress.ProgressError("存在未完成事项，不能生成已完成报告")
+        elif pending == "无":
+            raise progress.ProgressError("未完成或已终止的任务须说明未完成事项及接续条件")
+        if phase["finished_at"] and progress.timestamp(at) < progress.timestamp(phase["finished_at"]):
+            raise progress.ProgressError("报告时间早于阶段结束时间")
+        result = render_result(data, summary, args.artifacts, pending, delivery_method, at, complete)
+        print(result, end="")
+    except (progress.ProgressError, OSError, UnicodeError) as error:
+        parser.exit(1, f"无法生成任务结果报告：{error}\n")
 
 
 if __name__ == "__main__":

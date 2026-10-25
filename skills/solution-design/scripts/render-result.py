@@ -110,7 +110,7 @@ def render_result(summary, artifacts, started_at, continuous_mode,
         lines.extend([
             "是否进入 **3实现** 流程？",
             "",
-            "是否开启**连续模式**？开启后，将自动执行 **3实现** 和 **4归档**。",
+            "是否开启**连续模式**？开启后，将自动执行 **3实现**。",
         ])
     else:
         lines.append(

@@ -42,13 +42,15 @@ class DeploymentTests(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         return path
 
-    def test_build_preserves_exact_payload_and_omits_fifth_skill_and_caches(self):
-        self.write("problem-framing", "SKILL.md", "old fifth skill")
+    def test_build_preserves_exact_payload_and_omits_retired_skills_and_caches(self):
+        self.write("problem-framing", "SKILL.md", "retired framing skill")
+        self.write("change-closure", "SKILL.md", "retired closure skill")
         self.write("design-discussion", "scripts/__pycache__/cached.pyc", "cache")
         executable = self.repository / "skills/design-discussion/scripts/render-result.py"
         executable.chmod(0o755)
         manifest = deployment.build(self.repository, self.output)
-        self.assertEqual(set(p.name for p in (self.output / "skills").iterdir()), set(deployment.SKILLS))
+        self.assertEqual(set(p.name for p in (self.output / "skills").iterdir()),
+                         {"design-discussion", "solution-design", "guided-implementation"})
         self.assertTrue(manifest["source"]["worktree_dirty"])
         self.assertFalse(list(self.output.rglob(".gitkeep")))
         self.assertFalse(list(self.output.rglob("*.pyc")))
@@ -71,7 +73,8 @@ class DeploymentTests(unittest.TestCase):
         deployment.build(self.repository, self.output)
         shutil.rmtree(self.repository)
         manifest = deployment.verify(self.output)
-        self.assertEqual([skill["name"] for skill in manifest["skills"]], list(deployment.SKILLS))
+        self.assertEqual([skill["name"] for skill in manifest["skills"]],
+                         ["design-discussion", "solution-design", "guided-implementation"])
 
     def test_guided_implementation_manifest_separates_branch_dependencies(self):
         manifest = deployment.build(self.repository, self.output)
@@ -79,11 +82,14 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(skill["required_skills"], ["code-review"])
         self.assertEqual(set(skill["conditional_skills"]), {"implement-spec", "implement", "tdd"})
         self.assertTrue(all(skill["conditional_skills"].values()))
-        self.assertEqual(skill["handoff_skills"], ["solution-design", "change-closure"])
+        self.assertEqual(skill["handoff_skills"], ["solution-design"])
         self.assertTrue({
             "references/spec-execution.md",
             "references/small-change-execution.md",
-            "references/completion.md",
+            "references/acceptance-handoff.md",
+            "references/delivery-preparation.md",
+            "references/delivery.md",
+            "references/cleanup.md",
         }.issubset({item["path"] for item in skill["files"]}))
         self.assertEqual(deployment.verify(self.output), manifest)
 
@@ -99,7 +105,7 @@ class DeploymentTests(unittest.TestCase):
     def test_split_skill_still_requires_declared_dependencies(self):
         cases = (
             ("guided-implementation", "implement"),
-            ("guided-implementation", "change-closure"),
+            ("guided-implementation", "solution-design"),
             ("design-discussion", "grill-with-docs"),
             ("design-discussion", "solution-design"),
         )
@@ -121,22 +127,22 @@ class DeploymentTests(unittest.TestCase):
                         path.write_text(original, encoding="utf-8")
 
     def test_verify_rejects_changed_missing_added_files_and_permissions(self):
-        cases = ["changed", "missing", "added", "mode", "fifth"]
+        cases = ["changed", "missing", "added", "mode", "problem-framing", "change-closure"]
         for case in cases:
             with self.subTest(case=case):
                 output = self.root / case
                 deployment.build(self.repository, output)
-                path = output / "skills/change-closure/SKILL.md"
+                path = output / "skills/guided-implementation/SKILL.md"
                 if case == "changed":
                     path.write_text(path.read_text() + "\nchanged\n")
                 elif case == "missing":
                     path.unlink()
                 elif case == "added":
-                    (output / "skills/change-closure/extra.txt").write_text("extra")
+                    (output / "skills/guided-implementation/extra.txt").write_text("extra")
                 elif case == "mode":
                     path.chmod(0o600)
                 else:
-                    (output / "skills/problem-framing").mkdir()
+                    (output / "skills" / case).mkdir()
                 with self.assertRaises(deployment.DeploymentError):
                     deployment.verify(output)
 
@@ -167,7 +173,7 @@ class DeploymentTests(unittest.TestCase):
     def test_rejects_resource_symlinks(self):
         external = self.root / "external.txt"
         external.write_text("outside")
-        (self.repository / "skills/change-closure/linked.txt").symlink_to(external)
+        (self.repository / "skills/guided-implementation/linked.txt").symlink_to(external)
         with self.assertRaisesRegex(deployment.DeploymentError, "软链接"):
             deployment.build(self.repository, self.output)
         self.assertFalse(self.output.exists())
@@ -205,7 +211,8 @@ class DeploymentTests(unittest.TestCase):
             report = json.loads(result.stdout)
             self.assertEqual(report["status"], "passed")
             self.assertEqual(report["workflow_execution"], "not_run")
-            self.assertEqual(len(report["skills"]), 4)
+            self.assertEqual([skill["name"] for skill in report["skills"]],
+                             ["design-discussion", "solution-design", "guided-implementation"])
         self.assertEqual(before, (self.repository / "skills/design-discussion/SKILL.md").read_bytes())
         failed = subprocess.run([os.sys.executable, "-B", str(copied_script), "build",
                                  "--output", str(self.output)], capture_output=True, text=True)
