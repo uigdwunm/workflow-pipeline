@@ -1,6 +1,6 @@
 # Workflow Pipeline
 
-当前版本：**v2.0.1** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v2.0.1)
+当前版本：**v3.0.0** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v3.0.0)
 
 三个可独立调用、按需衔接的工程工作流 Skill，覆盖需求澄清、技术方案、实现与归档。
 
@@ -13,6 +13,8 @@
 可以从符合当前任务状态的阶段进入；后续衔接遵循用户的实际决定和连续模式要求。各阶段沿用同一份临时进度文件，交接时核对真实成果和仍有效的确认依据。
 
 归档属于 3实现的内部收尾。实现验收通过后继续交付和收尾，不再单独询问是否进入归档阶段；具体操作仍遵守已有授权和项目约定。
+
+v3.0.0 不再提供独立的 `change-closure` 入口，进度登记统一使用 `complete --steps` JSON 列表，单步也传入一个元素；原 `complete --step/--note/--at` 参数不再支持。v2.x 未完成任务应保留对应版本及进度现场，按原版本收尾；本次不提供旧四阶段进度的自动迁移。详见[更新日志](CHANGELOG.md)。
 
 方案和实现在独立任务 Worktree 中开展，保留用户常用工作区的分支与编辑器选择。3实现核实实际交付结果后，主动清理已交付且不再使用的临时分支，包括子 Agent 分支；托管 Worktree 的归档和移除交给宿主处理。
 
