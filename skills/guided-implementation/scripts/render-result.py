@@ -51,31 +51,22 @@ def report_durations(data, at, complete):
     return durations
 
 
-def step_note(phase, number):
-    if len(phase["steps"]) < number:
-        return "尚无完成记录"
-    return progress.escape(phase["steps"][number - 1]["note"])
-
-
-def render_result(data, summary, artifacts, pending, delivery_method, at, complete):
+def render_result(data, summary, artifacts, pending, delivery_method, at, complete,
+                  implementation_result, validation_result, closure_result):
     phase = data["stages"][-1]
     state = "已完成" if complete else {"进行中": "未完成", "已终止": "已终止"}[phase["status"]]
     closure = phase.get("closure", {})
     lines = [
         "**本次任务**", "", progress.escape(summary), "",
         f"**3实现{state}**", "",
-        f"**目标项目**：{artifact_link({'name': data['project'], 'location': data['project']})}",
-        f"**交付方式**：{progress.escape(delivery_method or '尚未核实')}",
-        f"**目标分支**：{progress.escape(closure.get('target_branch', '尚未核实'))}", "",
-        "**实现与验收**", "",
-        f"- **实现结果**：{step_note(phase, 2)}",
-        f"- **验收与整改**：{step_note(phase, 3)}",
+        "**完成内容**", "", progress.escape(implementation_result), "",
+        "**验证结果**", "", progress.escape(validation_result), "",
+        "**交付与收尾**", "",
+        f"- **目标项目**：{artifact_link({'name': data['project'], 'location': data['project']})}",
+        f"- **交付方式**：{progress.escape(delivery_method or '尚未核实')}",
+        f"- **目标分支**：{progress.escape(closure.get('target_branch', '尚未核实'))}",
         f"- **已验收实现提交**：{progress.escape(closure.get('implementation_commit', '尚未核实'))}",
-        "", "**交付结果**", "",
-        f"- **分支与文档**：{step_note(phase, 4)}",
-        f"- **整合与交付**：{step_note(phase, 5)}",
-        "", "**项目状态**", "", f"- {step_note(phase, 6)}",
-        "", "**资源处理**", "", f"- {step_note(phase, 7)}",
+        f"- **收尾结果**：{progress.escape(closure_result)}",
     ]
     lines.extend(["", "**成果位置**", ""])
     lines.extend(f"- {artifact_link(item)}" for item in artifacts)
@@ -107,6 +98,9 @@ def main():
     parser.add_argument("--task-id", required=True, help="创建时返回的固定任务标识")
     parser.add_argument("--project", required=True, help="原目标项目的绝对路径")
     parser.add_argument("--summary", required=True, help="整个任务的目标与最终确认范围，使用非空单行文本")
+    parser.add_argument("--implementation-result", required=True, help="实际改动与最终行为，非空单行文本")
+    parser.add_argument("--validation-result", required=True, help="测试、审查及验证限制，非空单行文本")
+    parser.add_argument("--closure-result", required=True, help="文档、项目状态及资源处理结果，非空单行文本")
     parser.add_argument("--artifacts", required=True, type=parse_artifacts, help="当前实际交付位置的 JSON 数组，允许 []")
     parser.add_argument("--complete", action="store_true", help="前七步及归档输入已完整记录，生成完成报告；不登记进度")
     parser.add_argument("--delivery-method", help="已核实的实际交付方式，完成报告必须提供")
@@ -117,6 +111,9 @@ def main():
         path = progress.absolute_path(args.file, "进度文档")
         project = progress.absolute_path(args.project, "目标项目")
         summary = progress.text(args.summary, "任务描述")
+        implementation_result = progress.text(args.implementation_result, "完成内容")
+        validation_result = progress.text(args.validation_result, "验证结果")
+        closure_result = progress.text(args.closure_result, "收尾结果")
         pending = progress.text(args.pending, "未完成事项")
         delivery_method = progress.text(args.delivery_method, "交付方式") if args.delivery_method is not None else None
         at = progress.event_time(args.at)
@@ -140,7 +137,8 @@ def main():
             raise progress.ProgressError("未完成或已终止的任务须说明未完成事项及接续条件")
         if phase["finished_at"] and progress.timestamp(at) < progress.timestamp(phase["finished_at"]):
             raise progress.ProgressError("报告时间早于阶段结束时间")
-        result = render_result(data, summary, args.artifacts, pending, delivery_method, at, complete)
+        result = render_result(data, summary, args.artifacts, pending, delivery_method, at, complete,
+                               implementation_result, validation_result, closure_result)
         print(result, end="")
     except (progress.ProgressError, OSError, UnicodeError) as error:
         parser.exit(1, f"无法生成任务结果报告：{error}\n")

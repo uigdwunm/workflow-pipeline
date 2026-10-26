@@ -380,6 +380,9 @@ class TaskProgressTests(unittest.TestCase):
             sys.executable, '-B', str(REPOSITORY / 'skills/guided-implementation/scripts/render-result.py'),
             '--file', str(self.file), '--task-id', self.task_id, '--project', str(self.project),
             '--summary', '配置校验实现、验证、交付及资源清理已完成',
+            '--implementation-result', '配置校验已实现',
+            '--validation-result', '测试和审查通过',
+            '--closure-result', '文档状态已更新，临时资源已清理',
             '--artifacts', json.dumps([{'name': '目标项目', 'location': str(self.project)}]),
             '--delivery-method', '本地合并', '--at', generated_at, '--complete', '--pending',
         ]

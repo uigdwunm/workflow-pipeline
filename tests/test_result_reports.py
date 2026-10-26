@@ -48,8 +48,11 @@ class ResultReportTests(unittest.TestCase):
                         self.assertNotIn("是否", result.stdout)
                     else:
                         self.assertIn(f"是否进入 **{profile[2]}** 流程", result.stdout)
-                        self.assertIn("是否开启**连续模式**", result.stdout)
-                        self.assertIn(profile[5], result.stdout)
+                        if profile[2] == "2方案":
+                            self.assertIn("是否开启**连续模式**", result.stdout)
+                            self.assertIn(profile[5], result.stdout)
+                        else:
+                            self.assertNotIn("连续模式", result.stdout)
                         self.assertNotIn("下一步将进入", result.stdout)
 
     def test_blocked_handoff_preserves_results_without_advancing_or_asking(self):

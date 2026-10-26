@@ -24,6 +24,9 @@ START = '2020-01-01T10:00:00+08:00'
 END = '2020-01-01T10:05:00+08:00'
 SUMMARY = '为配置加载增加必填项和格式校验'
 REPORT_SUMMARY = '为配置加载增加必填项和格式校验，并交付实现与验证结果'
+IMPLEMENTATION = '配置加载现在拒绝缺少必填项或格式无效的输入'
+VALIDATION = '本地测试通过，规范与需求审查通过；真机检查经用户豁免，未验证真机表现'
+CLOSURE = '规范已同步，无外部状态需更新；临时分支已删除，托管工作区因宿主保护保留'
 RESOURCES = '普通临时 Worktree 已清理；目标分支保留；Codex 托管 Worktree 不由本 Skill 管理'
 STEP_NOTES = (
     '工作区和审查基准已核实',
@@ -91,11 +94,15 @@ class FinalReportTests(unittest.TestCase):
         self.progress('complete', '--stage', '3', '--steps', json.dumps([{'step': 8, 'at': at, 'note': '最终报告已生成并保留'}]))
 
     def report_arguments(self, *arguments, task_id=None, project=None, artifacts=None, at=END,
-                         summary=REPORT_SUMMARY, pending='无', delivery_method='本地合并'):
+                         summary=REPORT_SUMMARY, pending='无', delivery_method='本地合并',
+                         implementation_result=IMPLEMENTATION, validation_result=VALIDATION,
+                         closure_result=CLOSURE):
         values = [str(REPORT_SCRIPT), '--file', str(self.file), '--task-id', task_id or self.task_id,
                   '--project', str(project or self.project), '--at', at,
                   '--artifacts', json.dumps(self.artifacts if artifacts is None else artifacts)]
-        for flag, value in (('--summary', summary), ('--pending', pending), ('--delivery-method', delivery_method)):
+        for flag, value in (('--summary', summary), ('--pending', pending), ('--delivery-method', delivery_method),
+                            ('--implementation-result', implementation_result),
+                            ('--validation-result', validation_result), ('--closure-result', closure_result)):
             if value is not None:
                 values += [flag, value]
         return values + list(arguments)
@@ -207,12 +214,15 @@ class FinalReportTests(unittest.TestCase):
         self.assertLess(result.stdout.index(REPORT_SUMMARY), result.stdout.index('**3实现已完成**'))
         self.assertIn('**交付方式**：本地合并', result.stdout)
         self.assertIn('**目标分支**：main', result.stdout)
-        sections = ('实现与验收', '交付结果', '项目状态', '资源处理', '成果位置', '未完成事项', '阶段用时')
+        sections = ('完成内容', '验证结果', '交付与收尾', '成果位置', '未完成事项', '阶段用时')
         positions = [result.stdout.index('**' + name + '**') for name in sections]
         self.assertEqual(positions, sorted(positions))
-        for number, section in ((2, 0), (3, 0), (4, 1), (5, 1), (6, 2), (7, 3)):
+        for summary, section in ((IMPLEMENTATION, 0), (VALIDATION, 1), (CLOSURE, 2)):
             body = result.stdout[positions[section]:positions[section + 1]]
-            self.assertIn(report.progress.escape(STEP_NOTES[number - 1]), body)
+            self.assertIn(report.progress.escape(summary), body)
+            self.assertEqual(result.stdout.count(report.progress.escape(summary)), 1)
+        for note in STEP_NOTES:
+            self.assertNotIn(report.progress.escape(note), result.stdout)
         self.assertIn('**已验收实现提交**：abcdef123', result.stdout)
         self.assertIn('| 3实现 | 5 分钟 |', result.stdout)
         self.assertIn('| **累计** | **5 分钟** |', result.stdout)
@@ -304,6 +314,16 @@ class FinalReportTests(unittest.TestCase):
                 result = self.finished_report(summary=summary, success=False)
                 self.assertIn('--summary' if summary is None else '任务描述', result.stderr)
 
+    def test_result_summaries_are_required_and_validated_without_changing_progress(self):
+        self.complete_through()
+        for field, label in (('implementation_result', '完成内容'),
+                             ('validation_result', '验证结果'), ('closure_result', '收尾结果')):
+            for value in (None, '', '   ', '第一行\n第二行', '第一行\r第二行',
+                          '结果\x85续行', '结果\u2028续行', '结果\u2029续行'):
+                with self.subTest(field=field, value=value):
+                    result = self.finished_report(success=False, **{field: value})
+                    self.assertIn('--' + field.replace('_', '-') if value is None else label, result.stderr)
+
     def test_report_aggregates_only_this_task_stages_and_excludes_stage_gaps(self):
         self.file.unlink()
         self.create('2', with_closure=False)
@@ -334,11 +354,14 @@ class FinalReportTests(unittest.TestCase):
         self.run_report(pending='新的未完成事项', success=False)
 
     def test_incomplete_report_does_not_close_or_change_progress(self):
-        result = self.run_report(delivery_method=None, pending='远程合并结果尚未核实，等待查询恢复')
+        result = self.run_report(delivery_method=None, pending='远程合并结果尚未核实，等待查询恢复',
+                                 validation_result='本地验证通过，远程检查失败待处理',
+                                 closure_result='文档已更新；交付与资源清理尚未执行')
         self.assertIn('**3实现未完成**', result.stdout)
         self.assertIn('阶段尚未结束', result.stdout)
         self.assertIn('**交付方式**：尚未核实', result.stdout)
-        self.assertIn('尚无完成记录', result.stdout)
+        self.assertIn('远程检查失败待处理', result.stdout)
+        self.assertIn('交付与资源清理尚未执行', result.stdout)
         self.assertIn('远程合并结果尚未核实', result.stdout)
         self.assertIn(REPORT_SUMMARY, result.stdout)
         self.assertIsNone(self.show()['stages'][0]['finished_at'])
@@ -489,10 +512,13 @@ class FinalReportTests(unittest.TestCase):
         self.progress('complete', '--stage', '3', '--steps', json.dumps([{'step': 7, 'at': START, 'note': special}]), success=False)
         self.progress('complete', '--stage', '3', '--steps', json.dumps([{'step': 7, 'at': END, 'note': special}]))
         result = self.finished_report(artifacts=[{'name': special, 'location': str(self.project / '[spec] |.md')}],
-                                      summary=special, delivery_method=special)
+                                      summary=special, delivery_method=special, implementation_result=special,
+                                      validation_result=special, closure_result=special)
         escaped = report.progress.escape(special)
         self.assertTrue(result.stdout.startswith('**本次任务**\n\n' + escaped + '\n'))
-        self.assertIn('**资源处理**\n\n- ' + escaped, result.stdout)
+        self.assertIn('**收尾结果**：' + escaped, result.stdout)
+        self.assertIn('**完成内容**\n\n' + escaped, result.stdout)
+        self.assertIn('**验证结果**\n\n' + escaped, result.stdout)
         self.assertIn('**交付方式**：' + escaped, result.stdout)
         self.assertIn('%5Bspec%5D%20%7C.md', result.stdout)
         self.assertEqual(self.show()['stages'][0]['closure'], self.closure)

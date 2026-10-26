@@ -12,10 +12,6 @@ from urllib.parse import quote, urlsplit
 
 STAGE_NAMES = {"2": "2方案", "3": "3实现"}
 STAGE_SKILLS = {"2": "solution-design", "3": "guided-implementation"}
-CONTINUOUS_STAGES = {
-    "2": "**2方案和3实现**",
-    "3": "**3实现**",
-}
 
 
 def parse_text(value):
@@ -133,11 +129,12 @@ def render_result(summary, artifacts, started_at, recommended_stage,
                 f"请先检查该 Skill 的安装、启用状态及入口，再进入 {stage_name} 流程。"
             )
     elif next_skill_available:
-        lines.extend([
-            f"是否进入 **{stage_name}** 流程？",
-            "",
-            f"是否开启**连续模式**？开启后，将自动执行 {CONTINUOUS_STAGES[recommended_stage]}。",
-        ])
+        lines.append(f"是否进入 **{stage_name}** 流程？")
+        if recommended_stage == "2":
+            lines.extend([
+                "",
+                "是否开启**连续模式**？开启后，将自动执行 **2方案和3实现**。",
+            ])
     else:
         lines.append(
             f"当前环境无法使用 `{skill_name}`。"

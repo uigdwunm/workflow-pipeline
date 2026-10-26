@@ -107,11 +107,7 @@ def render_result(summary, artifacts, started_at, continuous_mode,
                 "请先检查该 Skill 的安装、启用状态及入口，再进入 3实现 流程。"
             )
     elif implementation_skill_available:
-        lines.extend([
-            "是否进入 **3实现** 流程？",
-            "",
-            "是否开启**连续模式**？开启后，将自动执行 **3实现**。",
-        ])
+        lines.append("是否进入 **3实现** 流程？")
     else:
         lines.append(
             "当前环境无法使用 `guided-implementation`。请先检查该 Skill 的安装、启用状态及入口，再进入 3实现 流程。"
