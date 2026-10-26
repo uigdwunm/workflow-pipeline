@@ -1,6 +1,6 @@
 # Workflow Pipeline
 
-当前版本：**v3.0.0** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v3.0.0)
+当前版本：**v3.1.0** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v3.1.0)
 
 三个可独立调用、按需衔接的工程工作流 Skill，覆盖需求澄清、技术方案、实现与归档。
 
@@ -11,6 +11,8 @@
 | 3实现 | [`guided-implementation`](skills/guided-implementation/SKILL.md) | 按 Spec 或小改动路径完成实现、验收整改、文档收尾、交付、项目状态更新、资源清理和最终报告。 |
 
 可以从符合当前任务状态的阶段进入；后续衔接遵循用户的实际决定和连续模式要求。各阶段沿用同一份临时进度文件，交接时核对真实成果和仍有效的确认依据。
+
+v3.1.0 按实际影响确定小改动测试范围，精简最终报告，并限制高成本子 Agent 的使用。最终报告脚本新增三个必填摘要参数，升级时须同步更新调用方式；三阶段和进度文件结构不变。详见[更新日志](CHANGELOG.md)。
 
 归档属于 3实现的内部收尾。实现验收通过后继续交付和收尾，不再单独询问是否进入归档阶段；具体操作仍遵守已有授权和项目约定。
 
