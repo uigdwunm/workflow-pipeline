@@ -55,6 +55,12 @@ SKILLS = {
 CHECKS = ["skill_metadata", "agents_metadata", "python_syntax", "local_references"]
 GENERATED_NAMES = {".git", ".gitkeep", ".DS_Store", "__pycache__", ".pytest_cache"}
 REPOSITORY = Path(__file__).resolve().parents[1]
+MODEL_PREFERENCES_SOURCE = "preferences/subagent-models.md"
+MODEL_PREFERENCES_TARGET = "references/subagent-model-preferences.md"
+MODEL_PREFERENCES_CONSUMERS = {
+    "solution-design": "references/subagent-execution.md",
+    "guided-implementation": "references/agent-settings.md",
+}
 
 
 class DeploymentError(ValueError):
@@ -233,10 +239,29 @@ def git_source(repository):
 
 def prepare(repository):
     license_file = read_file(repository / "LICENSE")
+    preference_path = repository / MODEL_PREFERENCES_SOURCE
+    if preference_path.parent.is_symlink():
+        raise DeploymentError(f"偏好来源目录不能是软链接：{preference_path.parent}")
+    preference_file = read_file(preference_path)
     snapshots = {}
     skills = []
     for name in SKILLS:
         files = collect_files(repository / "skills" / name)
+        if name in MODEL_PREFERENCES_CONSUMERS:
+            if MODEL_PREFERENCES_TARGET in files:
+                raise DeploymentError(f"偏好副本仅在打包时生成，请修改共享来源：{name}/{MODEL_PREFERENCES_TARGET}")
+            origin = MODEL_PREFERENCES_CONSUMERS[name]
+            if origin not in files:
+                raise DeploymentError(f"缺少偏好入口：{name}/{origin}")
+            source_link = f"../../../{MODEL_PREFERENCES_SOURCE}".encode("utf-8")
+            content, mode = files[origin]
+            if source_link not in content:
+                raise DeploymentError(f"缺少共享偏好引用：{name}/{origin}")
+            files[origin] = (
+                content.replace(source_link, posixpath.basename(MODEL_PREFERENCES_TARGET).encode("utf-8")),
+                mode,
+            )
+            files[MODEL_PREFERENCES_TARGET] = preference_file
         files.setdefault("LICENSE", license_file)
         skills.append(inspect_skill(name, files))
         snapshots[name] = files

@@ -24,6 +24,7 @@ class DeploymentTests(unittest.TestCase):
         self.repository = self.root / "repository"
         self.repository.mkdir()
         shutil.copyfile(REPOSITORY / "LICENSE", self.repository / "LICENSE")
+        shutil.copytree(REPOSITORY / "preferences", self.repository / "preferences")
         for name in deployment.SKILLS:
             shutil.copytree(REPOSITORY / "skills" / name, self.repository / "skills" / name)
         for arguments in (
@@ -64,10 +65,110 @@ class DeploymentTests(unittest.TestCase):
             original = self.repository / "skills" / skill["name"]
             for path in original.rglob("*"):
                 if path.is_file() and path.name != ".gitkeep" and "__pycache__" not in path.parts:
-                    self.assertEqual(path.read_bytes(), (source / path.relative_to(original)).read_bytes())
+                    relative = path.relative_to(original)
+                    expected = path.read_bytes()
+                    if relative.as_posix() == deployment.MODEL_PREFERENCES_CONSUMERS.get(skill["name"]):
+                        expected = expected.replace(
+                            f"../../../{deployment.MODEL_PREFERENCES_SOURCE}".encode("utf-8"),
+                            Path(deployment.MODEL_PREFERENCES_TARGET).name.encode("utf-8"),
+                        )
+                    self.assertEqual(expected, (source / relative).read_bytes())
         copied = self.output / "skills/design-discussion/scripts/render-result.py"
         self.assertEqual(copied.stat().st_mode & 0o777, 0o755)
         self.assertEqual(deployment.verify(self.output), manifest)
+
+    def test_shared_preferences_are_embedded_with_local_links_without_changing_sources(self):
+        preference_path = self.repository / deployment.MODEL_PREFERENCES_SOURCE
+        preference_path.chmod(0o640)
+        preference_path.write_text(preference_path.read_text(encoding="utf-8") + "\nFixture preference\n",
+                                   encoding="utf-8")
+        before = {
+            name: (self.repository / "skills" / name / origin).read_bytes()
+            for name, origin in deployment.MODEL_PREFERENCES_CONSUMERS.items()
+        }
+        manifest = deployment.build(self.repository, self.output)
+        for skill in manifest["skills"]:
+            source = self.output / skill["candidate_source"]
+            preference = source / deployment.MODEL_PREFERENCES_TARGET
+            if skill["name"] not in deployment.MODEL_PREFERENCES_CONSUMERS:
+                self.assertFalse(preference.exists())
+                continue
+            self.assertEqual(preference.read_bytes(), preference_path.read_bytes())
+            self.assertEqual(preference.stat().st_mode & 0o777, 0o640)
+            origin = deployment.MODEL_PREFERENCES_CONSUMERS[skill["name"]]
+            self.assertIn(b"](subagent-model-preferences.md)", (source / origin).read_bytes())
+            self.assertEqual((self.repository / "skills" / skill["name"] / origin).read_bytes(),
+                             before[skill["name"]])
+        self.assertEqual(deployment.verify(self.output), manifest)
+
+    def test_shared_preference_source_and_consumer_links_are_required(self):
+        preference = self.repository / deployment.MODEL_PREFERENCES_SOURCE
+        original = preference.read_bytes()
+        preference.unlink()
+        with self.assertRaisesRegex(deployment.DeploymentError, "必须是普通文件"):
+            deployment.build(self.repository, self.output)
+        self.assertFalse(self.output.exists())
+        preference.write_bytes(original)
+
+        for name, origin in deployment.MODEL_PREFERENCES_CONSUMERS.items():
+            with self.subTest(skill=name):
+                path = self.repository / "skills" / name / origin
+                content = path.read_bytes()
+                path.write_bytes(content.replace(
+                    f"../../../{deployment.MODEL_PREFERENCES_SOURCE}".encode("utf-8"),
+                    b"missing-preferences.md",
+                ))
+                try:
+                    with self.assertRaisesRegex(deployment.DeploymentError, "缺少共享偏好引用"):
+                        deployment.build(self.repository, self.output)
+                    self.assertFalse(self.output.exists())
+                finally:
+                    path.write_bytes(content)
+
+                path.unlink()
+                try:
+                    with self.assertRaisesRegex(deployment.DeploymentError, "缺少偏好入口"):
+                        deployment.build(self.repository, self.output)
+                    self.assertFalse(self.output.exists())
+                finally:
+                    path.write_bytes(content)
+
+    def test_shared_preferences_reject_symlink_sources_and_checked_in_copies(self):
+        preference = self.repository / deployment.MODEL_PREFERENCES_SOURCE
+        content = preference.read_bytes()
+        external = self.root / "external-preference.md"
+        external.write_bytes(content)
+        preference.unlink()
+        preference.symlink_to(external)
+        try:
+            with self.assertRaisesRegex(deployment.DeploymentError, "软链接"):
+                deployment.build(self.repository, self.output)
+            self.assertFalse(self.output.exists())
+        finally:
+            preference.unlink()
+            preference.write_bytes(content)
+
+        folder = preference.parent
+        external_folder = self.root / "external-preferences"
+        folder.rename(external_folder)
+        folder.symlink_to(external_folder, target_is_directory=True)
+        try:
+            with self.assertRaisesRegex(deployment.DeploymentError, "软链接"):
+                deployment.build(self.repository, self.output)
+            self.assertFalse(self.output.exists())
+        finally:
+            folder.unlink()
+            external_folder.rename(folder)
+
+        for name in deployment.MODEL_PREFERENCES_CONSUMERS:
+            with self.subTest(skill=name):
+                copy = self.write(name, deployment.MODEL_PREFERENCES_TARGET, "stale copy")
+                try:
+                    with self.assertRaisesRegex(deployment.DeploymentError, "偏好副本仅在打包时生成"):
+                        deployment.build(self.repository, self.output)
+                    self.assertFalse(self.output.exists())
+                finally:
+                    copy.unlink()
 
     def test_verify_works_without_source_checkout(self):
         deployment.build(self.repository, self.output)

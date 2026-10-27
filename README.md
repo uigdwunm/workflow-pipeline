@@ -49,6 +49,8 @@ python3 scripts/prepare-deployment.py verify --package /tmp/workflow-pipeline-ca
 
 `problem-framing` 和 `change-closure` 不在本次候选中；占位文件和 Python 缓存也不打包。脚本检查 YAML 元数据、Python 语法和包内文件引用，拒绝软链接资源。`verify` 还检查文件增加、删除、内容、权限及清单是否一致。它不会执行候选脚本、查询宿主 Skill 登记、检查目标项目的配置，或运行完整工作流。
 
+子 Agent 的任务选型偏好只维护在 [preferences/subagent-models.md](preferences/subagent-models.md)。2方案和 3实现仅在四个指定模型均可用于本次子 Agent 时读取；缺少任一模型或无法核实时沿用通用默认选型。准备脚本把同一份偏好复制为这两个候选 Skill 各自的 `references/subagent-model-preferences.md`，并把入口引用改为包内路径；源码引用和其他资源保持原样，候选可独立使用。
+
 清单记录 Git 提交及工作区是否有改动、实际 Skill 元数据、调用策略、直接依赖、可选阶段交接、项目配置要求和逐文件哈希。未提交的内容也可以打包，实际候选文件及其哈希才是本次交付依据。直接依赖与交接声明维护在脚本的 `SKILLS` 中；修改 Skill 的依赖时同步更新，并由 manager 对照候选正文核实条件性依赖。
 
 `package_sha256` 是候选文件清单的摘要，**不是 cc-switch 的 `content_hash`**；manager 应按 cc-switch 的算法重新计算数据库哈希。清单也不是可直接写入组件登记的 `component.yaml`。
