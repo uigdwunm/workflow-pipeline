@@ -121,7 +121,29 @@ class TaskProgressTests(unittest.TestCase):
 
     def finish_all(self, stage='2', script=None, minute=1):
         results = []
+        if stage == '1':
+            points = {'goal': self.summary, 'decisions': '无', 'scope': '本任务范围',
+                      'open_questions': '无', 'inferences': '无'}
+            prepared = json.loads(self.run_cli('prepare-discussion', '--points', json.dumps(points),
+                                               '--at', START, script=script).stdout)
+            result = self.run_cli('confirm-discussion', '--confirmation-id', prepared['confirmation_id'],
+                                  '--reply', '确认以上讨论要点', '--source', '本轮展示要点后的用户答复',
+                                  '--at', f'2020-01-01T10:{minute:02d}:00+08:00', script=script)
+            results.append(json.loads(result.stdout))
         for number in range(1, len(progress.STEPS[stage]) + 1):
+            if stage == '1' and number == 1:
+                continue
+            if stage == '1' and number == 3:
+                result = subprocess.run([
+                    sys.executable, '-B', str(SCRIPTS[0].with_name('render-result.py')),
+                    '--file', str(self.file), '--task-id', self.task_id, '--project', str(self.project),
+                    '--summary', '讨论结论', '--artifacts', '[]', '--recommended-stage', '2',
+                    '--recommendation', '需要制定方案', '--continuous-mode', 'false',
+                    '--next-skill-available', 'unknown', '--at', f'2020-01-01T10:{minute:02d}:00+08:00',
+                ], capture_output=True, text=True, encoding='utf-8')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                results.append(progress.compact_result(self.file, self.show(script=script)))
+                continue
             result = self.complete(stage, number, f'2020-01-01T10:{minute:02d}:00+08:00', script=script)
             results.append(json.loads(result.stdout))
         return results

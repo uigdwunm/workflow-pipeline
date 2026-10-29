@@ -38,6 +38,9 @@ STEP_COLUMNS = ("编号", "大步骤", "简要结果", "完成时间")
 ARTIFACT_COLUMNS = ("产物", "实际位置")
 CLOSURE_FIELDS = (("worktree", "集成 Worktree"), ("branch", "集成分支"),
                   ("target_branch", "目标分支"), ("implementation_commit", "已验收实现提交"))
+DISCUSSION_FIELDS = (("goal", "目标"), ("decisions", "已有想法与决定"),
+                     ("scope", "范围和约束"), ("open_questions", "未决问题"),
+                     ("inferences", "模型推断（尚未确认）"))
 
 class ProgressError(ValueError):
     pass
@@ -52,6 +55,21 @@ def text(value, label, optional=False):
     if not value and not optional:
         raise ProgressError(f"{label}不能为空")
     return value
+
+
+def discussion_text(value, label):
+    if not isinstance(value, str) or not value.strip():
+        raise ProgressError(f"{label}必须是非空文本")
+    if any((ord(char) < 32 and char not in "\n\r\t") or ord(char) == 127
+           or char in "\x85\u2028\u2029" for char in value):
+        raise ProgressError(f"{label}不能包含控制字符或特殊换行符")
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def discussion_points(value):
+    if not isinstance(value, dict) or set(value) != {key for key, _ in DISCUSSION_FIELDS}:
+        raise ProgressError("讨论要点必须仅包含 goal、decisions、scope、open_questions、inferences")
+    return {key: discussion_text(value[key], label) for key, label in DISCUSSION_FIELDS}
 
 
 def absolute_path(value, label):
@@ -161,6 +179,8 @@ def cells(line):
 def next_step(phase):
     if phase["finished_at"] is not None:
         return None
+    if phase.get("discussions") and phase["discussions"][-1]["confirmation"] is None:
+        return {"id": "1.1", "name": STEPS["1"][0]}
     index = len(phase["steps"])
     return {"id": f"{phase['stage']}.{index + 1}", "name": STEPS[phase["stage"]][index]}
 
@@ -190,6 +210,12 @@ def render(data):
             phase["started_at"], phase["finished_at"] or EMPTY, escape(phase["note"]),
         ]))
     for phase in data["stages"]:
+        if "discussions" in phase:
+            lines.extend(["", f"## 1拷问确认记录（第 {phase['run']} 次）", "", "```json",
+                          json.dumps(phase["discussions"], ensure_ascii=False, indent=2), "```"])
+        if "report" in phase:
+            lines.extend(["", f"## 1拷问结果报告（第 {phase['run']} 次）", "", "```json",
+                          json.dumps(phase["report"], ensure_ascii=False, indent=2), "```"])
         if "closure" in phase:
             lines.extend(["", f"## 3实现归档输入（第 {phase['run']} 次）", ""])
             lines.extend(f"- {label}：{escape(phase['closure'][key])}" for key, label in CLOSURE_FIELDS)
@@ -253,7 +279,57 @@ def validate(data):
                 raise ProgressError("已完成阶段须在最后一个大步骤完成时结束")
         elif phase["status"] != "已终止" or not phase["note"]:
             raise ProgressError("终止阶段必须保留原因")
+        validate_discussions(phase)
+        if "report" in phase:
+            report = phase["report"]
+            if (stage != "1" or phase["status"] != "已完成" or not isinstance(report, dict)
+                    or set(report) != {"markdown", "input_sha256"}):
+                raise ProgressError("固定报告只能保存在已完成的 1拷问，且须包含 markdown、input_sha256")
+            discussion_text(report["markdown"], "固定报告")
+            if re.fullmatch(r"[0-9a-f]{64}", text(report["input_sha256"], "报告输入校验")) is None:
+                raise ProgressError("报告输入校验无效")
         previous_end = end
+
+
+def validate_discussions(phase):
+    if "discussions" not in phase:
+        return  # 保留旧进度的可读性；进入拷问时仍须取得确认记录。
+    records = phase["discussions"]
+    if phase["stage"] != "1" or not isinstance(records, list) or not records:
+        raise ProgressError("讨论确认记录只能是 1拷问的非空列表")
+    previous_time = timestamp(phase["started_at"])
+    identifiers = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {"id", "points", "prepared_at", "confirmation"}:
+            raise ProgressError("讨论确认记录字段无效")
+        identifier = text(record["id"], "确认编号")
+        if str(uuid.UUID(identifier)) != identifier or identifier in identifiers:
+            raise ProgressError("确认编号无效或重复")
+        identifiers.add(identifier)
+        if discussion_points(record["points"]) != record["points"]:
+            raise ProgressError("讨论要点格式无效")
+        prepared = timestamp(record["prepared_at"])
+        if prepared < previous_time:
+            raise ProgressError("准备时间早于阶段开始或上一版确认记录")
+        previous_time = prepared
+        confirmation = record["confirmation"]
+        if confirmation is not None:
+            if not isinstance(confirmation, dict) or set(confirmation) != {"reply", "source", "confirmed_at"}:
+                raise ProgressError("用户确认须包含 reply、source、confirmed_at")
+            if discussion_text(confirmation["reply"], "用户答复") != confirmation["reply"]:
+                raise ProgressError("用户答复格式无效")
+            text(confirmation["source"], "确认依据")
+            previous_time = timestamp(confirmation["confirmed_at"])
+            if previous_time < prepared:
+                raise ProgressError("确认时间早于要点准备时间")
+            if not phase["steps"]:
+                raise ProgressError("已有确认记录但缺少第 1 步完成记录")
+        if phase["finished_at"] and previous_time > timestamp(phase["finished_at"]):
+            raise ProgressError("讨论确认记录晚于阶段结束")
+    if len(phase["steps"]) >= 2:
+        record = confirmed_discussion(phase)
+        if timestamp(record["confirmation"]["confirmed_at"]) > timestamp(phase["steps"][1]["finished_at"]):
+            raise ProgressError("执行拷问的完成时间早于讨论要点确认")
 
 
 def parse_document(content):
@@ -306,6 +382,26 @@ def parse_document(content):
             "finished_at": None if finish == EMPTY else finish, "note": unescape(note), "steps": [],
         })
     for phase in data["stages"]:
+        if position + 1 < len(lines) and lines[position + 1] == f"## 1拷问确认记录（第 {phase['run']} 次）":
+            expect("")
+            expect(f"## 1拷问确认记录（第 {phase['run']} 次）")
+            expect("")
+            expect("```json")
+            start = position
+            while position < len(lines) and lines[position] != "```":
+                position += 1
+            phase["discussions"] = json.loads("\n".join(lines[start:position]))
+            expect("```")
+        if position + 1 < len(lines) and lines[position + 1] == f"## 1拷问结果报告（第 {phase['run']} 次）":
+            expect("")
+            expect(f"## 1拷问结果报告（第 {phase['run']} 次）")
+            expect("")
+            expect("```json")
+            start = position
+            while position < len(lines) and lines[position] != "```":
+                position += 1
+            phase["report"] = json.loads("\n".join(lines[start:position]))
+            expect("```")
         if position + 1 < len(lines) and lines[position + 1] == f"## 3实现归档输入（第 {phase['run']} 次）":
             expect("")
             expect(f"## 3实现归档输入（第 {phase['run']} 次）")
@@ -386,6 +482,76 @@ def latest_stage(data, stage):
     raise ProgressError(f"本任务尚未进入 {STAGES[stage]}")
 
 
+def active_discussion(data):
+    phase = data["stages"][-1]
+    if phase["stage"] != "1" or phase["finished_at"] is not None:
+        raise ProgressError("讨论确认命令仅适用于当前尚未结束的 1拷问")
+    return phase
+
+
+def confirmed_discussion(phase):
+    records = phase.get("discussions", [])
+    if not records or records[-1]["confirmation"] is None:
+        raise ProgressError("本轮讨论要点尚未取得用户确认；先准备、展示并等待答复，再调用 confirm-discussion")
+    return records[-1]
+
+
+def prepare_discussion(data, points, at):
+    candidate = deepcopy(data)
+    phase = active_discussion(candidate)
+    points = discussion_points(points)
+    records = phase.setdefault("discussions", [])
+    if records and records[-1]["points"] == points:
+        return
+    if len(phase["steps"]) >= 2:
+        raise ProgressError("执行拷问已登记完成，不能改写本轮的前置确认")
+    records.append({"id": str(uuid.uuid4()), "points": points, "prepared_at": at, "confirmation": None})
+    validate(candidate)
+    data.update(candidate)
+
+
+def confirm_discussion(data, identifier, reply, source, at):
+    candidate = deepcopy(data)
+    phase = active_discussion(candidate)
+    records = phase.get("discussions", [])
+    if not records or records[-1]["id"] != identifier:
+        raise ProgressError("确认编号不属于本轮最新讨论要点，请展示并确认当前版本")
+    record = records[-1]
+    reply, source = discussion_text(reply, "用户答复"), text(source, "确认依据")
+    if record["confirmation"] is not None:
+        if (record["confirmation"]["reply"], record["confirmation"]["source"]) != (reply, source):
+            raise ProgressError("该版本已有不同确认答复或依据，不能覆盖原记录")
+        return
+    record["confirmation"] = {"reply": reply, "source": source, "confirmed_at": at}
+    if not phase["steps"]:
+        phase["steps"].append({"id": "1.1", "name": STEPS["1"][0],
+                               "note": "用户已确认讨论要点，确认编号 " + identifier, "finished_at": at})
+    validate(candidate)
+    data.update(candidate)
+
+
+def discussion_prompt(record):
+    lines = ["请确认本轮讨论要点：", ""]
+    for key, label in DISCUSSION_FIELDS:
+        lines.extend([f"**{label}**", *(escape(line) for line in record["points"][key].splitlines()), ""])
+    lines.append("以上理解是否准确？请确认或指出需要调整的内容，确认后再开始拷问。")
+    return "\n".join(lines)
+
+
+def finish_discussion(data, markdown, input_sha256, at):
+    candidate = deepcopy(data)
+    phase = active_discussion(candidate)
+    confirmed_discussion(phase)
+    if len(phase["steps"]) != 2:
+        raise ProgressError("生成完成报告前须完成确认讨论要点和执行拷问两步")
+    phase["report"] = {"markdown": markdown, "input_sha256": input_sha256}
+    phase["steps"].append({"id": "1.3", "name": STEPS["1"][2],
+                           "note": "成果验收通过，固定报告已生成并保存", "finished_at": at})
+    phase["status"], phase["finished_at"] = "已完成", at
+    validate(candidate)
+    data.update(candidate)
+
+
 def enter_stage(data, stage, at, new_run=False, closure=None):
     if closure is not None:
         if stage != "3":
@@ -450,6 +616,12 @@ def complete_steps(data, stage, entries):
         number = entry["step"]
         if type(number) is not int or not 1 <= number <= len(STEPS[stage]):
             raise ProgressError("step 必须是本阶段已有大步骤的整数序号")
+        if stage == "1":
+            if number == 1:
+                raise ProgressError("确认讨论要点须使用 confirm-discussion，不能通过 complete 登记")
+            if number == 3:
+                raise ProgressError("1拷问须通过 render-result.py 生成固定报告并收尾，不能通过 complete 结束")
+            confirmed_discussion(phase)
         if previous_number is not None and number != previous_number + 1:
             raise ProgressError("列表中的步骤须连续递增，不能重复、乱序或跳步")
         previous_number = number
@@ -522,6 +694,9 @@ def main():
         ("stop", "明确取消或切换流程时终止阶段，保留已完成步骤"),
         ("show", "恢复任务或生成报告时读取完整记录及阶段耗时"),
         ("cleanup", "整个任务已结束且报告已保留后删除临时进度文档"),
+        ("prepare-discussion", "保存本轮讨论要点并生成待用户确认的内容"),
+        ("confirm-discussion", "登记当前版本的实际用户答复及依据，完成确认讨论要点"),
+        ("check-discussion", "进入拷问前核对本轮确认并返回已确认要点，只读"),
     ):
         subparser = commands.add_parser(command, help=description, allow_abbrev=command != "complete")
         subparser.add_argument("--project", required=True, help="原目标项目的绝对路径")
@@ -533,7 +708,7 @@ def main():
             subparser.add_argument("--task-id", required=True, help="创建时返回的固定任务标识")
         if command in {"create", "enter", "complete", "stop"}:
             subparser.add_argument("--stage", required=True, choices=tuple(STAGES))
-        if command in {"create", "enter", "stop"}:
+        if command in {"create", "enter", "stop", "prepare-discussion", "confirm-discussion"}:
             subparser.add_argument("--at", help="实际事件的 ISO 8601 时间，须有时区；默认取当前时间")
         if command == "enter":
             subparser.add_argument("--new-run", action="store_true", help="明确重新执行已结束阶段时追加一轮")
@@ -547,6 +722,12 @@ def main():
             subparser.add_argument("--note", required=True, help="一句结果或终止原因")
         if command == "cleanup":
             subparser.add_argument("--task-finished", action="store_true", required=True)
+        if command == "prepare-discussion":
+            subparser.add_argument("--points", required=True, type=json_value, help="五项讨论要点的 JSON 对象")
+        if command == "confirm-discussion":
+            subparser.add_argument("--confirmation-id", required=True, help="prepare-discussion 返回的当前确认编号")
+            subparser.add_argument("--reply", required=True, help="用户针对本版要点的实际确认答复")
+            subparser.add_argument("--source", required=True, help="该用户答复的消息引用或可定位的对话依据")
     args = parser.parse_args()
     try:
         project = absolute_path(args.project, "目标项目")
@@ -562,19 +743,33 @@ def main():
                     enter_stage(data, args.stage, event_time(args.at), args.new_run, args.closure)
                 elif args.command == "complete":
                     complete_steps(data, args.stage, args.steps)
+                elif args.command == "prepare-discussion":
+                    prepare_discussion(data, args.points, event_time(args.at))
+                elif args.command == "confirm-discussion":
+                    confirm_discussion(data, args.confirmation_id, args.reply, args.source, event_time(args.at))
+                elif args.command == "check-discussion":
+                    confirmed_discussion(active_discussion(data))
                 elif args.command == "stop":
                     stop_stage(data, args.stage, args.note, event_time(args.at))
                 elif args.command == "cleanup":
                     if any(phase["finished_at"] is None for phase in data["stages"]):
                         raise ProgressError("还有未结束的阶段，必须保留进度文档")
                     path.unlink()
-                if args.command not in {"show", "cleanup"}:
+                if args.command not in {"show", "cleanup", "check-discussion"}:
                     validate(data)
                     if render(data) != original:
                         write_document(path, data)
         result = {"file": str(path), **summarize(data)} if args.command == "show" else compact_result(path, data)
         if args.command == "cleanup":
             result["removed"] = True
+        if args.command in {"prepare-discussion", "confirm-discussion", "check-discussion"}:
+            record = data["stages"][-1]["discussions"][-1]
+            result["confirmation_id"] = record["id"]
+            if args.command == "prepare-discussion":
+                result["confirmed"] = record["confirmation"] is not None
+                result["confirmation_prompt"] = discussion_prompt(record)
+            elif args.command == "check-discussion":
+                result.update(points=record["points"], confirmation=record["confirmation"])
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except (ProgressError, OSError, UnicodeError) as error:
         parser.exit(1, f"无法处理任务进度：{error}\n")

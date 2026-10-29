@@ -288,8 +288,19 @@ class FinalReportTests(unittest.TestCase):
         whole_task_summary = '移除重复状态，保留必要行为并交付实现与验证结果'
         self.file.unlink()
         self.create('1', with_closure=False, summary=initial_summary)
-        for number in (1, 2, 3):
-            self.progress('complete', '--stage', '1', '--steps', json.dumps([{'step': number, 'note': '讨论结论已确认', 'at': START}]))
+        points = {'goal': initial_summary, 'decisions': '无', 'scope': '只讨论',
+                  'open_questions': '无', 'inferences': '无'}
+        prepared = json.loads(self.progress('prepare-discussion', '--points', json.dumps(points), '--at', START).stdout)
+        self.progress('confirm-discussion', '--confirmation-id', prepared['confirmation_id'],
+                      '--reply', '确认以上要点', '--source', '展示要点后的用户答复', '--at', START)
+        self.progress('complete', '--stage', '1', '--steps', json.dumps([{'step': 2, 'note': '讨论结论已确认', 'at': START}]))
+        self.invoke([
+            str(REPOSITORY / 'skills/design-discussion/scripts/render-result.py'),
+            '--file', str(self.file), '--task-id', self.task_id, '--project', str(self.project),
+            '--summary', '讨论结论已确认', '--artifacts', '[]', '--recommended-stage', '2',
+            '--recommendation', '需要制定方案', '--continuous-mode', 'false',
+            '--next-skill-available', 'unknown', '--at', START,
+        ])
         self.progress('enter', '--stage', '2', '--at', START)
         for number in (1, 2, 3, 4):
             self.progress('complete', '--stage', '2', '--steps', json.dumps([{'step': number, 'note': '方案已确认', 'at': START}]))

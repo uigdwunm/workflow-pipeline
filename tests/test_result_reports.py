@@ -1,12 +1,17 @@
 # coding: utf-8
+import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location('report_test_progress', REPOSITORY / 'skills/design-discussion/scripts/task-progress.py')
+progress = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(progress)
 SUMMARY = "已确认的本次成果"
 PROFILES = (
     ("design-discussion", "next-skill-available", "2方案", "[]",
@@ -26,12 +31,25 @@ class ResultReportTests(unittest.TestCase):
             sys.executable, "-B", str(script),
             "--summary", SUMMARY,
             "--artifacts", default_artifacts if artifacts is None else artifacts,
-            "--started-at", "2026-01-01T09:00:00-07:00",
             "--" + available_argument, available,
         ] + extra_arguments
         if continuous_mode is not None:
             arguments.extend(["--continuous-mode", continuous_mode])
-        return subprocess.run(arguments, capture_output=True, text=True, encoding="utf-8")
+        if skill != 'design-discussion':
+            arguments += ['--started-at', '2026-01-01T09:00:00-07:00']
+            return subprocess.run(arguments, capture_output=True, text=True, encoding="utf-8")
+        with tempfile.TemporaryDirectory() as folder:
+            project = Path(folder)
+            path = project / 'progress.md'
+            at = '2026-01-01T09:00:00-07:00'
+            data = progress.create_document(path, project, SUMMARY, '1', at)
+            points = {'goal': SUMMARY, 'decisions': '无', 'scope': '本任务', 'open_questions': '无', 'inferences': '无'}
+            progress.prepare_discussion(data, points, at)
+            progress.confirm_discussion(data, data['stages'][0]['discussions'][0]['id'], '确认要点', '本轮用户答复', at)
+            progress.complete_steps(data, '1', [{'step': 2, 'note': '拷问已完成', 'at': at}])
+            progress.write_document(path, data)
+            arguments += ['--file', str(path), '--task-id', data['task_id'], '--project', str(project)]
+            return subprocess.run(arguments, capture_output=True, text=True, encoding="utf-8")
 
     def assert_recommendation(self, profile, report):
         self.assertIn("**下一步**", report)

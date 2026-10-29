@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 # coding: utf-8
-"""根据固定参数生成 1拷问的 Markdown 结果报告。"""
+"""核对统一进度，生成并保存 1拷问固定报告，登记收尾后返回完整 Markdown。"""
 
 import argparse
+import hashlib
+import importlib.util
 import json
 import string
-from datetime import datetime, timezone
+import sys
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 
 STAGE_NAMES = {"2": "2方案", "3": "3实现"}
 STAGE_SKILLS = {"2": "solution-design", "3": "guided-implementation"}
+sys.dont_write_bytecode = True
+SPEC = importlib.util.spec_from_file_location("task_progress", Path(__file__).with_name("task-progress.py"))
+progress = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(progress)
 
 
 def parse_text(value):
@@ -20,16 +26,6 @@ def parse_text(value):
     if any((ord(char) < 32 and char not in "\n\r\t") or ord(char) == 127 for char in value):
         raise argparse.ArgumentTypeError("文本不能包含控制字符")
     return value.strip()
-
-
-def parse_started_at(value):
-    try:
-        started_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("开始时间必须是 ISO 8601 时间") from error
-    if started_at.utcoffset() is None:
-        raise argparse.ArgumentTypeError("开始时间必须包含时区，例如 +08:00 或 Z")
-    return started_at
 
 
 def parse_artifacts(value):
@@ -131,6 +127,10 @@ def render_result(summary, artifacts, started_at, recommended_stage,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--file", required=True, help="同一进度文件的绝对路径")
+    parser.add_argument("--task-id", required=True, help="创建时返回的固定任务标识")
+    parser.add_argument("--project", required=True, help="原目标项目的绝对路径")
+    parser.add_argument("--at", help="实际报告生成完成时间，须有时区；默认取当前时间")
     parser.add_argument(
         "--summary", required=True, type=parse_text,
         help="本次拷问摘要和已确认结论，支持多行文本",
@@ -138,10 +138,6 @@ def main():
     parser.add_argument(
         "--artifacts", required=True, type=parse_artifacts,
         help='文档产物 JSON 数组，例如 [{"name":"讨论文档","location":"/absolute/path/discussion.md"}]；无文档产物时传入 []',
-    )
-    parser.add_argument(
-        "--started-at", required=True, type=parse_started_at,
-        help="进入 Skill 时的 ISO 8601 时间，必须包含时区",
     )
     parser.add_argument(
         "--recommended-stage", required=True, choices=("2", "3"),
@@ -160,15 +156,41 @@ def main():
         help="建议阶段对应的 Skill 可用情况：true 已核实可用，false 已确认不可用，unknown 尚未核实",
     )
     args = parser.parse_args()
-    now = datetime.now(timezone.utc)
-    if args.started_at > now:
-        parser.error("开始时间不能晚于当前时间")
-    print(render_result(
-        args.summary, args.artifacts, args.started_at,
-        args.recommended_stage, args.recommendation,
-        args.continuous_mode == "true",
-        {"true": True, "false": False, "unknown": None}[args.next_skill_available], now,
-    ), end="")
+    try:
+        path = progress.absolute_path(args.file, "进度文档")
+        project = progress.absolute_path(args.project, "目标项目")
+        at = progress.event_time(args.at)
+        inputs = {name: getattr(args, name) for name in (
+            "summary", "artifacts", "recommended_stage", "recommendation", "continuous_mode", "next_skill_available",
+        )}
+        digest = hashlib.sha256(json.dumps(inputs, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        with progress.lock_document(path):
+            data = progress.read_document(path)
+            progress.match_task(data, args.task_id, project)
+            phase = data["stages"][-1]
+            if phase["stage"] != "1":
+                raise progress.ProgressError("当前阶段不是 1拷问")
+            if phase["finished_at"] is not None:
+                if "report" not in phase or phase["status"] != "已完成":
+                    raise progress.ProgressError("本轮已结束且没有固定报告记录，请核实原结果；不能覆盖重建")
+                if phase["report"]["input_sha256"] != digest:
+                    raise progress.ProgressError("本轮已有不同报告输入，不能覆盖原报告")
+                print(phase["report"]["markdown"], end="", flush=True)
+                return
+            progress.confirmed_discussion(phase)
+            if len(phase["steps"]) != 2:
+                raise progress.ProgressError("生成完成报告前须完成确认讨论要点和执行拷问两步")
+            markdown = render_result(
+                args.summary, args.artifacts, progress.timestamp(phase["started_at"]),
+                args.recommended_stage, args.recommendation, args.continuous_mode == "true",
+                {"true": True, "false": False, "unknown": None}[args.next_skill_available], progress.timestamp(at),
+            )
+            progress.finish_discussion(data, markdown, digest, at)
+            # 输出失败时保留未结束的原文件；写入失败时调用方须按非零退出状态处理，保留输出待恢复。
+            print(markdown, end="", flush=True)
+            progress.write_document(path, data)
+    except (progress.ProgressError, OSError, UnicodeError) as error:
+        parser.exit(1, f"无法生成并登记 1拷问报告：{error}\n")
 
 
 if __name__ == "__main__":
