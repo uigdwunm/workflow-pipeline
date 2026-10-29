@@ -1,6 +1,6 @@
 # Workflow Pipeline
 
-当前版本：**v3.1.1** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v3.1.1)
+当前版本：**v3.2.0** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v3.2.0)
 
 三个可独立调用、按需衔接的工程工作流 Skill，覆盖需求澄清、技术方案、实现与归档。
 
@@ -11,6 +11,8 @@
 | 3实现 | [`guided-implementation`](skills/guided-implementation/SKILL.md) | 按 Spec 或小改动路径完成实现、验收整改、文档收尾、交付、项目状态更新、资源清理和最终报告。 |
 
 可以从符合当前任务状态的阶段进入；后续衔接遵循用户的实际决定和连续模式要求。各阶段沿用同一份临时进度文件，交接时核对真实成果和仍有效的确认依据。
+
+v3.2.0 支持通过用户文件以自然语言定义子 Agent 选型偏好；仅在用户文件不存在时读取内置默认规则。默认选型由运行时判断，并按模型级别和价格限制推理强度；下级委派沿用同一份规则。详见[选型偏好](#子-agent-选型偏好)和[更新日志](CHANGELOG.md)。
 
 v3.1.1 明确阶段报告先展示再接续，最终报告直接展开并反映当前任务状态；完善任务分支清理，并按模型实际可用情况启用子 Agent 任务选型偏好。Skill 名称、脚本接口和进度格式保持不变。详见[更新日志](CHANGELOG.md)。
 
@@ -51,7 +53,15 @@ python3 scripts/prepare-deployment.py verify --package /tmp/workflow-pipeline-ca
 
 `problem-framing` 和 `change-closure` 不在本次候选中；占位文件和 Python 缓存也不打包。脚本检查 YAML 元数据、Python 语法和包内文件引用，拒绝软链接资源。`verify` 还检查文件增加、删除、内容、权限及清单是否一致。它不会执行候选脚本、查询宿主 Skill 登记、检查目标项目的配置，或运行完整工作流。
 
-子 Agent 的任务选型偏好只维护在 [preferences/subagent-models.md](preferences/subagent-models.md)。2方案和 3实现仅在四个指定模型均可用于本次子 Agent 时读取；缺少任一模型或无法核实时沿用通用默认选型。准备脚本把同一份偏好复制为这两个候选 Skill 各自的 `references/subagent-model-preferences.md`，并把入口引用改为包内路径；源码引用和其他资源保持原样，候选可独立使用。
+## 子 Agent 选型偏好
+
+2方案和 3实现先检查当前运行环境中用户主目录下的 `~/.config/workflow-pipeline/subagent-models.md`。文件存在时完整读取；只有确认不存在时，才读取[内置默认偏好](preferences/subagent-models.md)。每次只使用一份偏好规则，下级委派沿用同一份文件。
+
+用户可以用自然语言描述选型条件、模型、推理强度或判断原则，无需固定格式。选定文件无法读取，或文件内容存在任何问题时，说明问题并询问用户，等待回复后继续；不改读另一份规则。
+
+用户文件由用户自行维护。准备脚本把同一份内置默认偏好复制为两个候选 Skill 各自的 `references/subagent-model-preferences.md`，并把入口引用改为包内路径；源码引用和其他资源保持原样，候选可独立使用。
+
+## 候选包清单
 
 清单记录 Git 提交及工作区是否有改动、实际 Skill 元数据、调用策略、直接依赖、可选阶段交接、项目配置要求和逐文件哈希。未提交的内容也可以打包，实际候选文件及其哈希才是本次交付依据。直接依赖与交接声明维护在脚本的 `SKILLS` 中；修改 Skill 的依赖时同步更新，并由 manager 对照候选正文核实条件性依赖。
 
