@@ -33,27 +33,37 @@ class ResultReportTests(unittest.TestCase):
             arguments.extend(["--continuous-mode", continuous_mode])
         return subprocess.run(arguments, capture_output=True, text=True, encoding="utf-8")
 
+    def assert_recommendation(self, profile, report):
+        self.assertIn("**下一步**", report)
+        self.assertIn(f"建议进入 **{profile[2]}**", report)
+        extra_arguments = profile[4]
+        if "--recommendation" in extra_arguments:
+            reason = extra_arguments[extra_arguments.index("--recommendation") + 1]
+            self.assertIn(reason, report)
+
     def test_continuous_handoff_proceeds_without_stage_questions(self):
         for profile in PROFILES:
             with self.subTest(skill=profile[0], stage=profile[2]):
                 result = self.run_report(profile, "true", "true")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(SUMMARY, result.stdout)
+                self.assert_recommendation(profile, result.stdout)
                 self.assertIn(f"下一步将进入 {profile[2]} 流程", result.stdout)
                 self.assertNotIn("是否", result.stdout)
 
-    def test_explicit_stage_scope_ends_without_handoff_for_any_availability(self):
+    def test_explicit_stage_scope_preserves_recommendation_without_handoff(self):
         for profile in PROFILES:
             for available in ("true", "false", "unknown"):
                 with self.subTest(skill=profile[0], stage=profile[2], available=available):
                     result = self.run_report(profile, "false", available)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn(SUMMARY, result.stdout)
+                    self.assert_recommendation(profile, result.stdout)
                     for artifact in json.loads(profile[3]):
                         self.assertIn(artifact["location"], result.stdout)
                     stage = "1拷问" if profile[0] == "design-discussion" else "2方案"
                     self.assertIn(f"本次按用户要求在 {stage} 结束。", result.stdout)
-                    for text in ("是否", "下一步", "无法使用", "尚未核实", "交接暂缓"):
+                    for text in ("是否", "下一步将进入", "无法使用", "尚未核实", "交接暂缓"):
                         self.assertNotIn(text, result.stdout)
 
     def test_blocked_handoff_preserves_results_without_advancing_or_asking(self):
@@ -63,6 +73,7 @@ class ResultReportTests(unittest.TestCase):
                     result = self.run_report(profile, "true", available)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn(SUMMARY, result.stdout)
+                    self.assert_recommendation(profile, result.stdout)
                     for artifact in json.loads(profile[3]):
                         self.assertIn(artifact["location"], result.stdout)
                     self.assertNotIn("是否", result.stdout)

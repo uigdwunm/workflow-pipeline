@@ -104,28 +104,27 @@ def render_result(summary, artifacts, started_at, recommended_stage,
         f"**开始时间**：{started_at.isoformat(sep=' ', timespec='seconds')}  ",
         f"**总耗时**：{format_duration(duration)}",
     ])
+    lines.extend(["", "---", "", "**下一步**", ""])
+    recommendation_lines = [
+        escape_text(line.strip()) for line in recommendation.strip().splitlines()
+    ]
+    lines.append(f"建议进入 **{stage_name}**，{recommendation_lines[0]}")
+    lines.extend(recommendation_lines[1:])
+    lines.append("")
     if not continuous_mode:
-        lines.extend(["", "本次按用户要求在 1拷问 结束。"])
+        lines.append("本次按用户要求在 1拷问 结束。")
+    elif next_skill_available is None:
+        lines.append(
+            f"**{stage_name}** 对应 Skill 的可用情况尚未核实，交接暂缓。"
+            "进入该流程前需重新核实。"
+        )
+    elif next_skill_available:
+        lines.append(f"当前是连续模式，下一步将进入 {stage_name} 流程")
     else:
-        lines.extend(["", "---", "", "**下一步**", ""])
-        recommendation_lines = [
-            escape_text(line.strip()) for line in recommendation.strip().splitlines()
-        ]
-        lines.append(f"建议进入 **{stage_name}**，{recommendation_lines[0]}")
-        lines.extend(recommendation_lines[1:])
-        lines.append("")
-        if next_skill_available is None:
-            lines.append(
-                f"**{stage_name}** 对应 Skill 的可用情况尚未核实，交接暂缓。"
-                "进入该流程前需重新核实。"
-            )
-        elif next_skill_available:
-            lines.append(f"当前是连续模式，下一步将进入 {stage_name} 流程")
-        else:
-            lines.append(
-                f"当前是连续模式，但当前环境无法使用 `{skill_name}`。"
-                f"请先检查该 Skill 的安装、启用状态及入口，再进入 {stage_name} 流程。"
-            )
+        lines.append(
+            f"当前是连续模式，但当前环境无法使用 `{skill_name}`。"
+            f"请先检查该 Skill 的安装、启用状态及入口，再进入 {stage_name} 流程。"
+        )
 
     return "\n".join("> " + line if line else ">" for line in lines) + "\n"
 

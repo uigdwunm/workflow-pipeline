@@ -86,24 +86,29 @@ def render_result(summary, artifacts, started_at, continuous_mode,
         "",
         f"**开始时间**：{started_at.isoformat(sep=' ', timespec='seconds')}  ",
         f"**总耗时**：{format_duration(duration)}",
+        "",
+        "---",
+        "",
+        "**下一步**",
+        "",
+        "建议进入 **3实现**，按已确认的方案完成实现与验收。",
+        "",
     ])
 
     if not continuous_mode:
-        lines.extend(["", "本次按用户要求在 2方案 结束。"])
+        lines.append("本次按用户要求在 2方案 结束。")
+    elif implementation_skill_available is None:
+        lines.append(
+            "**3实现** 对应 Skill 的可用情况尚未核实，交接暂缓。"
+            "进入该流程前需重新核实。"
+        )
+    elif implementation_skill_available:
+        lines.append("当前是连续模式，下一步将进入 3实现 流程")
     else:
-        lines.extend(["", "---", "", "**下一步**", ""])
-        if implementation_skill_available is None:
-            lines.append(
-                "**3实现** 对应 Skill 的可用情况尚未核实，交接暂缓。"
-                "进入该流程前需重新核实。"
-            )
-        elif implementation_skill_available:
-            lines.append("当前是连续模式，下一步将进入 3实现 流程")
-        else:
-            lines.append(
-                "当前是连续模式，但当前环境无法使用 `guided-implementation`。"
-                "请先检查该 Skill 的安装、启用状态及入口，再进入 3实现 流程。"
-            )
+        lines.append(
+            "当前是连续模式，但当前环境无法使用 `guided-implementation`。"
+            "请先检查该 Skill 的安装、启用状态及入口，再进入 3实现 流程。"
+        )
 
     return "\n".join("> " + line if line else ">" for line in lines) + "\n"
 
