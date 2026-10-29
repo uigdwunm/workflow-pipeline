@@ -86,32 +86,24 @@ def render_result(summary, artifacts, started_at, continuous_mode,
         "",
         f"**开始时间**：{started_at.isoformat(sep=' ', timespec='seconds')}  ",
         f"**总耗时**：{format_duration(duration)}",
-        "",
-        "---",
-        "",
-        "**下一步**",
-        "",
     ])
 
-    if implementation_skill_available is None:
-        lines.append(
-            "**3实现** 对应 Skill 的可用情况尚未核实，交接暂缓。"
-            "进入该流程前需重新核实。"
-        )
-    elif continuous_mode:
-        if implementation_skill_available:
+    if not continuous_mode:
+        lines.extend(["", "本次按用户要求在 2方案 结束。"])
+    else:
+        lines.extend(["", "---", "", "**下一步**", ""])
+        if implementation_skill_available is None:
+            lines.append(
+                "**3实现** 对应 Skill 的可用情况尚未核实，交接暂缓。"
+                "进入该流程前需重新核实。"
+            )
+        elif implementation_skill_available:
             lines.append("当前是连续模式，下一步将进入 3实现 流程")
         else:
             lines.append(
                 "当前是连续模式，但当前环境无法使用 `guided-implementation`。"
                 "请先检查该 Skill 的安装、启用状态及入口，再进入 3实现 流程。"
             )
-    elif implementation_skill_available:
-        lines.append("是否进入 **3实现** 流程？")
-    else:
-        lines.append(
-            "当前环境无法使用 `guided-implementation`。请先检查该 Skill 的安装、启用状态及入口，再进入 3实现 流程。"
-        )
 
     return "\n".join("> " + line if line else ">" for line in lines) + "\n"
 
@@ -129,7 +121,7 @@ def main():
     )
     parser.add_argument(
         "--continuous-mode", required=True, choices=("true", "false"),
-        help="当前是否处于连续模式",
+        help="按本次用户执行范围判断是否接续后续阶段",
     )
     parser.add_argument(
         "--implementation-skill-available", required=True, choices=("true", "false", "unknown"),

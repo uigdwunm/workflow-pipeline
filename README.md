@@ -1,6 +1,6 @@
 # Workflow Pipeline
 
-当前版本：**v3.2.0** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v3.2.0)
+当前版本：**v3.3.0** · [更新日志](CHANGELOG.md) · [发布与下载](https://github.com/uigdwunm/workflow-pipeline/releases/tag/v3.3.0)
 
 三个可独立调用、按需衔接的工程工作流 Skill，覆盖需求澄清、技术方案、实现与归档。
 
@@ -10,7 +10,9 @@
 | 2方案 | [`solution-design`](skills/solution-design/SKILL.md) | 根据已确认需求生成 Spec 和必要的 Tickets，明确设计取舍与验收方式。 |
 | 3实现 | [`guided-implementation`](skills/guided-implementation/SKILL.md) | 按 Spec 或小改动路径完成实现、验收整改、文档收尾、交付、项目状态更新、资源清理和最终报告。 |
 
-可以从符合当前任务状态的阶段进入；后续衔接遵循用户的实际决定和连续模式要求。各阶段沿用同一份临时进度文件，交接时核对真实成果和仍有效的确认依据。
+可以从符合当前任务状态的阶段进入，默认连续执行后续阶段；用户明确限定执行范围时，在指定阶段结束。仅调用某个 Skill 表示选择入口，不视为只执行该阶段。各阶段沿用同一份临时进度文件，交接时核对真实成果和仍有效的确认依据；阶段内的设计确认、授权和验收仍按原规则执行。
+
+v3.3.0 默认连续执行后续阶段，用户明确限定范围时在指定阶段结束。阶段报告先展示再接续，单阶段报告不再询问是否继续，也不因未使用的后续入口不可用而提示交接受阻。详见[更新日志](CHANGELOG.md)。
 
 v3.2.0 支持通过用户文件以自然语言定义子 Agent 选型偏好；仅在用户文件不存在时读取内置默认规则。默认选型由运行时判断，并按模型级别和价格限制推理强度；下级委派沿用同一份规则。详见[选型偏好](#子-agent-选型偏好)和[更新日志](CHANGELOG.md)。
 
