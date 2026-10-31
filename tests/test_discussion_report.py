@@ -32,6 +32,7 @@ class DiscussionReportTests(unittest.TestCase):
         self.project.mkdir()
         self.file = self.root / 'progress.md'
         self.data = progress.create_document(self.file, self.project, '首页整理', '1', START)
+        progress.set_scope(self.data, '1', '本次只做讨论', '用户原始范围指令')
         self.task_id = self.data['task_id']
         points = {'goal': '检查首页结构', 'decisions': '保持业务行为', 'scope': '只讨论',
                   'open_questions': '如何划分职责', 'inferences': '无'}
@@ -46,7 +47,7 @@ class DiscussionReportTests(unittest.TestCase):
             'file': str(self.file), 'task-id': self.task_id, 'project': str(self.project),
             'summary': '已确认职责边界与验收范围', 'artifacts': '[]',
             'recommended-stage': '2', 'recommendation': '需要细化技术方案',
-            'continuous-mode': 'false', 'next-skill-available': 'unknown', 'at': at,
+            'next-skill-available': 'unknown', 'at': at,
         }
         values.update(overrides)
         return [part for key, value in values.items() if value is not None for part in ('--' + key, value)]
@@ -113,6 +114,7 @@ class DiscussionReportTests(unittest.TestCase):
         progress.stop_stage(self.data, '1', '用户取消', INTERVIEW_END)
         progress.write_document(self.file, self.data)
         self.assert_rejected()
+        progress.set_scope(self.data, '3', '继续后续阶段', '用户新指令')
         progress.enter_stage(self.data, '2', END)
         progress.write_document(self.file, self.data)
         self.assert_rejected()

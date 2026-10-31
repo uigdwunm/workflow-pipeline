@@ -75,9 +75,7 @@ def render_spec_confirmation(summary, artifacts, confirmation_items, recommendat
 
 请检查以下 Spec 是否符合已明确的目标、范围、约束和决策，提出修改意见或确认通过，并决定是否需要拆分 Tickets。
 
-判断是否拆分 Tickets 时，根据已生成的 Spec，结合工作量、是否包含需要分别交付和验收的部分，以及实施依赖关系进行判断。
-
-通常需要拆分 Tickets。只有非常简单、能够通过一次短小且连贯的实现完成的小任务，才可以省略。
+判断是否拆分 Tickets 时，结合实际工作量和耦合程度，核对独立交付、验收或并行收益。适合一次连贯完成的工作保持单一实现单元。
 
 **内容摘要**
 
@@ -98,7 +96,7 @@ def render_spec_confirmation(summary, artifacts, confirmation_items, recommendat
 请通过当前环境的通信工具回复本子 Agent：
 
 - 需要修改时，说明具体修改要求。我会修订后重新提交确认。
-- 确认通过时，明确说明 Spec 已确认以及是否需要拆分 Tickets；无需拆分时说明原因，并通知我继续。
+- 确认通过时，明确说明 Spec 已确认、是否需要拆分 Tickets 及简短依据，并通知我继续。
 
 收到明确确认前，我暂停后续执行。
 """

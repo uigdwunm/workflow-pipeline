@@ -138,7 +138,7 @@ class TaskProgressTests(unittest.TestCase):
                     sys.executable, '-B', str(SCRIPTS[0].with_name('render-result.py')),
                     '--file', str(self.file), '--task-id', self.task_id, '--project', str(self.project),
                     '--summary', '讨论结论', '--artifacts', '[]', '--recommended-stage', '2',
-                    '--recommendation', '需要制定方案', '--continuous-mode', 'false',
+                    '--recommendation', '需要制定方案',
                     '--next-skill-available', 'unknown', '--at', f'2020-01-01T10:{minute:02d}:00+08:00',
                 ], capture_output=True, text=True, encoding='utf-8')
                 self.assertEqual(result.returncode, 0, result.stderr)

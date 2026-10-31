@@ -84,10 +84,12 @@ def format_duration(seconds):
 
 
 def render_result(summary, artifacts, started_at, recommended_stage,
-                  recommendation, continuous_mode, next_skill_available, now):
+                  recommendation, scope, next_skill_available, now):
     duration = int((now - started_at).total_seconds())
     stage_name = STAGE_NAMES[recommended_stage]
-    skill_name = STAGE_SKILLS[recommended_stage]
+    handoff_stage = str(min(int(recommended_stage), int(scope["end_stage"])))
+    handoff_name = STAGE_NAMES.get(handoff_stage)
+    skill_name = STAGE_SKILLS.get(handoff_stage)
     lines = ["**1拷问已完成**", "", "**拷问摘要**  "]
     lines.extend(escape_text(line.strip()) for line in summary.strip().splitlines())
     lines.extend(["", "**成果**", ""])
@@ -100,26 +102,27 @@ def render_result(summary, artifacts, started_at, recommended_stage,
         f"**开始时间**：{started_at.isoformat(sep=' ', timespec='seconds')}  ",
         f"**总耗时**：{format_duration(duration)}",
     ])
-    lines.extend(["", "---", "", "**下一步**", ""])
+    lines.extend(["", "**执行范围**  ", escape_text(progress.scope_description(scope)),
+                  "", "---", "", "**下一步**", ""])
     recommendation_lines = [
         escape_text(line.strip()) for line in recommendation.strip().splitlines()
     ]
     lines.append(f"建议进入 **{stage_name}**，{recommendation_lines[0]}")
     lines.extend(recommendation_lines[1:])
     lines.append("")
-    if not continuous_mode:
+    if scope["end_stage"] == "1":
         lines.append("本次按用户要求在 1拷问 结束。")
     elif next_skill_available is None:
         lines.append(
-            f"**{stage_name}** 对应 Skill 的可用情况尚未核实，交接暂缓。"
+            f"**{handoff_name}** 对应 Skill 的可用情况尚未核实，交接暂缓。"
             "进入该流程前需重新核实。"
         )
     elif next_skill_available:
-        lines.append(f"当前是连续模式，下一步将进入 {stage_name} 流程")
+        lines.append(f"当前是连续模式，下一步将进入 {handoff_name} 流程")
     else:
         lines.append(
             f"当前是连续模式，但当前环境无法使用 `{skill_name}`。"
-            f"请先检查该 Skill 的安装、启用状态及入口，再进入 {stage_name} 流程。"
+            f"请先检查该 Skill 的安装、启用状态及入口，再进入 {handoff_name} 流程。"
         )
 
     return "\n".join("> " + line if line else ">" for line in lines) + "\n"
@@ -148,12 +151,8 @@ def main():
         help="建议进入该阶段的理由，支持多行文本",
     )
     parser.add_argument(
-        "--continuous-mode", required=True, choices=("true", "false"),
-        help="按本次用户执行范围判断是否接续后续阶段",
-    )
-    parser.add_argument(
         "--next-skill-available", required=True, choices=("true", "false", "unknown"),
-        help="建议阶段对应的 Skill 可用情况：true 已核实可用，false 已确认不可用，unknown 尚未核实",
+        help="执行范围内实际接续阶段的 Skill 可用情况：true 可用，false 不可用，unknown 尚未核实",
     )
     args = parser.parse_args()
     try:
@@ -161,7 +160,7 @@ def main():
         project = progress.absolute_path(args.project, "目标项目")
         at = progress.event_time(args.at)
         inputs = {name: getattr(args, name) for name in (
-            "summary", "artifacts", "recommended_stage", "recommendation", "continuous_mode", "next_skill_available",
+            "summary", "artifacts", "recommended_stage", "recommendation", "next_skill_available",
         )}
         digest = hashlib.sha256(json.dumps(inputs, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
         with progress.lock_document(path):
@@ -182,7 +181,7 @@ def main():
                 raise progress.ProgressError("生成完成报告前须完成确认讨论要点和执行拷问两步")
             markdown = render_result(
                 args.summary, args.artifacts, progress.timestamp(phase["started_at"]),
-                args.recommended_stage, args.recommendation, args.continuous_mode == "true",
+                args.recommended_stage, args.recommendation, data["execution_scope"],
                 {"true": True, "false": False, "unknown": None}[args.next_skill_available], progress.timestamp(at),
             )
             progress.finish_discussion(data, markdown, digest, at)

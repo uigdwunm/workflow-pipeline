@@ -72,6 +72,43 @@ def discussion_points(value):
     return {key: discussion_text(value[key], label) for key, label in DISCUSSION_FIELDS}
 
 
+def execution_scope(value):
+    if not isinstance(value, dict) or set(value) != {"end_stage", "user_instruction"}:
+        raise ProgressError("执行范围须包含 end_stage 和 user_instruction")
+    if not isinstance(value["end_stage"], str) or value["end_stage"] not in STAGES:
+        raise ProgressError("执行结束阶段必须是 1、2 或 3")
+    instruction = value["user_instruction"]
+    if instruction is None:
+        if value["end_stage"] != "3":
+            raise ProgressError("提前结束须提供用户原话和可定位来源")
+    else:
+        if not isinstance(instruction, dict) or set(instruction) != {"text", "source"}:
+            raise ProgressError("执行范围依据须包含用户原话 text 和来源 source")
+        instruction = {"text": discussion_text(instruction["text"], "执行范围的用户原话"),
+                       "source": text(instruction["source"], "执行范围的用户来源")}
+    return {"end_stage": value["end_stage"], "user_instruction": instruction}
+
+
+def make_execution_scope(end_stage="3", reply=None, source=None):
+    instruction = None if reply is None and source is None else {"text": reply, "source": source}
+    return execution_scope({"end_stage": end_stage, "user_instruction": instruction})
+
+
+def set_scope(data, end_stage, reply, source):
+    if reply is None or source is None:
+        raise ProgressError("修改执行范围须提供用户原话和可定位来源")
+    data["execution_scope"] = make_execution_scope(end_stage, reply, source)
+
+
+def scope_description(scope):
+    end = STAGES[scope["end_stage"]]
+    instruction = scope["user_instruction"]
+    if instruction is None:
+        return "默认连续执行至 3实现及收尾。"
+    quote = instruction["text"].replace("\n", " ")
+    return f"按用户要求执行至 {end}；依据：“{quote}”（来源：{instruction['source']}）。"
+
+
 def absolute_path(value, label):
     path = Path(text(str(value), label))
     if not path.is_absolute():
@@ -201,7 +238,9 @@ def render(data):
         f"- 本次任务：{escape(data['summary'])}",
         f"- 目标项目：{link(data['project'], data['project'])}",
         f"- 当前阶段：{escape(stage)}",
-        f"- 当前大步骤：{escape(step)}", "", "## 阶段时间", "",
+        f"- 当前大步骤：{escape(step)}", "", "## 执行范围", "", "```json",
+        json.dumps(data["execution_scope"], ensure_ascii=False, indent=2), "```",
+        "", "## 阶段时间", "",
         row(STAGE_COLUMNS), row(["---"] * len(STAGE_COLUMNS)),
     ]
     for phase in data["stages"]:
@@ -233,6 +272,8 @@ def render(data):
 
 
 def validate(data):
+    if execution_scope(data["execution_scope"]) != data["execution_scope"]:
+        raise ProgressError("执行范围格式无效")
     if str(uuid.UUID(data["task_id"])) != data["task_id"]:
         raise ProgressError("任务标识无效")
     text(data["summary"], "任务简介")
@@ -371,6 +412,17 @@ def parse_document(content):
             "project": read_link(field("目标项目"))["path"], "stages": []}
     field("当前阶段")
     field("当前大步骤")
+    expect("")
+    if position >= len(lines) or lines[position] != "## 执行范围":
+        raise ProgressError("进度文档缺少执行范围记录，请沿用创建本任务的旧版本收尾")
+    expect("## 执行范围")
+    expect("")
+    expect("```json")
+    start = position
+    while position < len(lines) and lines[position] != "```":
+        position += 1
+    data["execution_scope"] = json.loads("\n".join(lines[start:position]))
+    expect("```")
     expect("")
     expect("## 阶段时间")
     expect("")
@@ -530,11 +582,12 @@ def confirm_discussion(data, identifier, reply, source, at):
     data.update(candidate)
 
 
-def discussion_prompt(record):
+def discussion_prompt(record, scope):
     lines = ["请确认本轮讨论要点：", ""]
     for key, label in DISCUSSION_FIELDS:
         lines.extend([f"**{label}**", *(escape(line) for line in record["points"][key].splitlines()), ""])
-    lines.append("以上理解是否准确？请确认或指出需要调整的内容，确认后再开始拷问。")
+    lines.extend(["**执行范围（沿用任务记录）**", escape(scope_description(scope)), "",
+                  "以上理解是否准确？请确认或指出需要调整的内容，确认后再开始拷问。"])
     return "\n".join(lines)
 
 
@@ -553,6 +606,8 @@ def finish_discussion(data, markdown, input_sha256, at):
 
 
 def enter_stage(data, stage, at, new_run=False, closure=None):
+    if int(stage) > int(data["execution_scope"]["end_stage"]):
+        raise ProgressError("目标阶段超出用户限定的执行范围，须先核对新指令并用 set-scope 更新")
     if closure is not None:
         if stage != "3":
             raise ProgressError("归档输入只适用于 3实现")
@@ -581,7 +636,7 @@ def attach_closure(phase, closure):
     phase["closure"] = closure
 
 
-def create_document(path, project, summary, stage, at, closure=None):
+def create_document(path, project, summary, stage, at, closure=None, scope=None):
     summary = text(summary, "任务简介")
     if not project.is_dir():
         raise ProgressError(f"目标项目目录不存在：{project}")
@@ -591,12 +646,16 @@ def create_document(path, project, summary, stage, at, closure=None):
             if (Path(data["project"]).resolve() != project.resolve() or data["summary"] != summary
                     or data["stages"][-1]["stage"] != stage):
                 raise ProgressError("已有进度文档的任务或阶段不一致，原文件已保留")
+            if scope is not None and execution_scope(scope) != data["execution_scope"]:
+                raise ProgressError("已有任务的执行范围不同，须按用户新指令用 set-scope 更新")
             original = render(data)
             enter_stage(data, stage, at, closure=closure)
             if render(data) != original:
                 write_document(path, data)
             return data
-        data = {"task_id": str(uuid.uuid4()), "summary": summary, "project": str(project.resolve()), "stages": []}
+        data = {"task_id": str(uuid.uuid4()), "summary": summary, "project": str(project.resolve()),
+                "execution_scope": execution_scope(scope) if scope is not None else make_execution_scope(),
+                "stages": []}
         enter_stage(data, stage, at, closure=closure)
         write_document(path, data, create=True)
         return data
@@ -675,7 +734,7 @@ def compact_result(path, data):
             "stage": phase["stage"], "run": phase["run"], "status": phase["status"],
             "started_at": phase["started_at"], "finished_at": phase["finished_at"],
             "last_completed_step": phase["steps"][-1]["id"] if phase["steps"] else None,
-            "next_step": next_step(phase)}
+            "next_step": next_step(phase), "execution_scope": data["execution_scope"]}
 
 
 def json_value(value):
@@ -693,6 +752,7 @@ def main():
         ("complete", "按列表登记一个或多个已完成步骤；最后一步自动结束阶段"),
         ("stop", "明确取消或切换流程时终止阶段，保留已完成步骤"),
         ("show", "恢复任务或生成报告时读取完整记录及阶段耗时"),
+        ("set-scope", "按用户新指令更新任务执行范围，保留阶段记录"),
         ("cleanup", "整个任务已结束且报告已保留后删除临时进度文档"),
         ("prepare-discussion", "保存本轮讨论要点并生成待用户确认的内容"),
         ("confirm-discussion", "登记当前版本的实际用户答复及依据，完成确认讨论要点"),
@@ -703,7 +763,12 @@ def main():
         if command == "create":
             subparser.add_argument("--output", required=True, help="进度文档绝对路径，父目录须已存在")
             subparser.add_argument("--summary", required=True, help="原始任务的问题和目标，使用简短单行文本")
-        else:
+        if command in {"create", "set-scope"}:
+            subparser.add_argument("--end-stage", choices=tuple(STAGES), required=command == "set-scope",
+                                   help="任务执行终点；新任务默认 3，提前结束须提供用户原话和来源")
+            subparser.add_argument("--scope-reply", required=command == "set-scope", help="用户明确限定或修改执行范围的原话")
+            subparser.add_argument("--scope-source", required=command == "set-scope", help="该用户指令的可定位来源")
+        if command != "create":
             subparser.add_argument("--file", required=True, help="同一进度文档的绝对路径")
             subparser.add_argument("--task-id", required=True, help="创建时返回的固定任务标识")
         if command in {"create", "enter", "complete", "stop"}:
@@ -733,7 +798,10 @@ def main():
         project = absolute_path(args.project, "目标项目")
         path = absolute_path(args.output if args.command == "create" else args.file, "进度文档")
         if args.command == "create":
-            data = create_document(path, project, args.summary, args.stage, event_time(args.at), args.closure)
+            scope = None
+            if args.end_stage is not None or args.scope_reply is not None or args.scope_source is not None:
+                scope = make_execution_scope(args.end_stage or "3", args.scope_reply, args.scope_source)
+            data = create_document(path, project, args.summary, args.stage, event_time(args.at), args.closure, scope)
         else:
             with lock_document(path):
                 data = read_document(path)
@@ -741,6 +809,8 @@ def main():
                 original = render(data)
                 if args.command == "enter":
                     enter_stage(data, args.stage, event_time(args.at), args.new_run, args.closure)
+                elif args.command == "set-scope":
+                    set_scope(data, args.end_stage, args.scope_reply, args.scope_source)
                 elif args.command == "complete":
                     complete_steps(data, args.stage, args.steps)
                 elif args.command == "prepare-discussion":
@@ -767,7 +837,7 @@ def main():
             result["confirmation_id"] = record["id"]
             if args.command == "prepare-discussion":
                 result["confirmed"] = record["confirmation"] is not None
-                result["confirmation_prompt"] = discussion_prompt(record)
+                result["confirmation_prompt"] = discussion_prompt(record, data["execution_scope"])
             elif args.command == "check-discussion":
                 result.update(points=record["points"], confirmation=record["confirmation"])
         print(json.dumps(result, ensure_ascii=False, indent=2))

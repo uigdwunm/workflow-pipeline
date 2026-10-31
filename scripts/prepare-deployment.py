@@ -39,9 +39,9 @@ SKILLS = {
         "required_skills": ["code-review"],
         # 分支依赖按条件核实，不作为所有任务的共同前置条件。
         "conditional_skills": {
-            "implement-spec": "已有 Spec 的实现路径",
-            "implement": "没有 Spec 的小改动实现路径",
-            "tdd": "Spec 路径，或小改动路径需要使用 TDD 时",
+            "implement-spec": "已有 Spec 和必要 Tickets，拆分有独立交付、验收或并行收益的任务图路径",
+            "implement": "适合一次连贯完成的单一实现路径，复用 Spec 或简短方案",
+            "tdd": "任务图路径，或单一实现路径已有 Spec 或需要使用 TDD 时",
         },
         "handoff_skills": ["solution-design"],
         "dependency_files": [

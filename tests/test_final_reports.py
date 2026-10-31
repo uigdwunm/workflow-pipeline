@@ -298,7 +298,7 @@ class FinalReportTests(unittest.TestCase):
             str(REPOSITORY / 'skills/design-discussion/scripts/render-result.py'),
             '--file', str(self.file), '--task-id', self.task_id, '--project', str(self.project),
             '--summary', '讨论结论已确认', '--artifacts', '[]', '--recommended-stage', '2',
-            '--recommendation', '需要制定方案', '--continuous-mode', 'false',
+            '--recommendation', '需要制定方案',
             '--next-skill-available', 'unknown', '--at', START,
         ])
         self.progress('enter', '--stage', '2', '--at', START)

@@ -3,21 +3,18 @@
 """根据固定参数生成 2方案的 Markdown 结果报告。"""
 
 import argparse
+import importlib.util
 import json
 import string
-from datetime import datetime, timezone
+import sys
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 
-def parse_started_at(value):
-    try:
-        started_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("开始时间必须是 ISO 8601 时间") from error
-    if started_at.utcoffset() is None:
-        raise argparse.ArgumentTypeError("开始时间必须包含时区，例如 +08:00 或 Z")
-    return started_at
+sys.dont_write_bytecode = True
+SPEC = importlib.util.spec_from_file_location("task_progress", Path(__file__).with_name("task-progress.py"))
+progress = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(progress)
 
 
 def parse_artifacts(value):
@@ -75,7 +72,7 @@ def format_duration(seconds):
     return " ".join([f"{value} {unit}" for value, unit in units if value] + [f"{seconds} 秒"])
 
 
-def render_result(summary, artifacts, started_at, continuous_mode,
+def render_result(summary, artifacts, started_at, scope,
                   implementation_skill_available, now):
     duration = int((now - started_at).total_seconds())
     lines = ["**2方案已完成**", "", "**方案摘要**  "]
@@ -87,6 +84,9 @@ def render_result(summary, artifacts, started_at, continuous_mode,
         f"**开始时间**：{started_at.isoformat(sep=' ', timespec='seconds')}  ",
         f"**总耗时**：{format_duration(duration)}",
         "",
+        "**执行范围**  ",
+        escape_text(progress.scope_description(scope)),
+        "",
         "---",
         "",
         "**下一步**",
@@ -95,7 +95,7 @@ def render_result(summary, artifacts, started_at, continuous_mode,
         "",
     ])
 
-    if not continuous_mode:
+    if scope["end_stage"] == "2":
         lines.append("本次按用户要求在 2方案 结束。")
     elif implementation_skill_available is None:
         lines.append(
@@ -115,18 +115,14 @@ def render_result(summary, artifacts, started_at, continuous_mode,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--file", required=True, help="同一进度文件的绝对路径")
+    parser.add_argument("--task-id", required=True, help="创建时返回的固定任务标识")
+    parser.add_argument("--project", required=True, help="原目标项目的绝对路径")
+    parser.add_argument("--at", help="实际报告生成完成时间，须有时区；默认取当前时间")
     parser.add_argument("--summary", required=True, help="本次方案摘要")
     parser.add_argument(
         "--artifacts", required=True, type=parse_artifacts,
         help='成果 JSON 数组，例如 [{"name":"Spec","location":"/absolute/path/spec.md"}]',
-    )
-    parser.add_argument(
-        "--started-at", required=True, type=parse_started_at,
-        help="进入 Skill 时的 ISO 8601 时间，必须包含时区",
-    )
-    parser.add_argument(
-        "--continuous-mode", required=True, choices=("true", "false"),
-        help="按本次用户执行范围判断是否接续后续阶段",
     )
     parser.add_argument(
         "--implementation-skill-available", required=True, choices=("true", "false", "unknown"),
@@ -135,14 +131,27 @@ def main():
     args = parser.parse_args()
     if not args.summary.strip():
         parser.error("方案摘要不能为空")
-    now = datetime.now(timezone.utc)
-    if args.started_at > now:
-        parser.error("开始时间不能晚于当前时间")
-    print(render_result(
-        args.summary, args.artifacts, args.started_at,
-        args.continuous_mode == "true",
-        {"true": True, "false": False, "unknown": None}[args.implementation_skill_available], now,
-    ), end="")
+    try:
+        path = progress.absolute_path(args.file, "进度文档")
+        project = progress.absolute_path(args.project, "目标项目")
+        at = progress.event_time(args.at)
+        data = progress.read_document(path)
+        progress.match_task(data, args.task_id, project)
+        phase = data["stages"][-1]
+        if phase["stage"] != "2" or phase["status"] != "进行中" or len(phase["steps"]) != 3:
+            raise progress.ProgressError("方案报告须在当前 2方案前三步完成后、收尾登记前生成")
+        if data["execution_scope"]["end_stage"] == "1":
+            raise progress.ProgressError("当前方案阶段超出用户限定的执行范围，须先核对实际状态")
+        now = progress.timestamp(at)
+        if now < progress.timestamp(phase["steps"][-1]["finished_at"]):
+            raise progress.ProgressError("报告时间不能早于已完成步骤")
+        print(render_result(
+            args.summary, args.artifacts, progress.timestamp(phase["started_at"]),
+            data["execution_scope"],
+            {"true": True, "false": False, "unknown": None}[args.implementation_skill_available], now,
+        ), end="")
+    except (progress.ProgressError, OSError, UnicodeError) as error:
+        parser.exit(1, f"无法生成 2方案报告：{error}\n")
 
 
 if __name__ == "__main__":
