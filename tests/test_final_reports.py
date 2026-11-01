@@ -396,6 +396,19 @@ class FinalReportTests(unittest.TestCase):
         self.assertEqual(phase['started_at'], START)
         self.assertEqual(phase['run'], 1)
 
+    def test_paused_implementation_keeps_status_report_and_resumes_final_completion(self):
+        self.complete_through()
+        self.progress('pause', '--stage', '3', '--reply', '先暂停实现收尾', '--source', '用户暂停消息')
+        rejected = self.finished_report(success=False)
+        self.assertIn('暂停', rejected.stderr)
+        self.run_report(pending='用户已暂停，等待恢复后完成最终报告')
+        self.assertIsNone(self.show()['stages'][0]['finished_at'])
+        self.progress('resume', '--stage', '3', '--reply', '恢复收尾', '--source', '用户恢复消息')
+        self.assertIn('**3实现已完成**', self.finished_report().stdout)
+        self.register_report()
+        self.progress('pause', '--stage', '3', '--reply', '暂停后续操作', '--source', '用户后续消息')
+        self.assertIn('**3实现已完成**', self.finished_report().stdout)
+
     def test_completion_requires_inputs_seven_steps_delivery_method_and_no_pending_items(self):
         for count in range(3, 7):
             self.complete_through(count)

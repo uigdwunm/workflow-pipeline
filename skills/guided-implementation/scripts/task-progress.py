@@ -72,41 +72,90 @@ def discussion_points(value):
     return {key: discussion_text(value[key], label) for key, label in DISCUSSION_FIELDS}
 
 
-def execution_scope(value):
-    if not isinstance(value, dict) or set(value) != {"end_stage", "user_instruction"}:
-        raise ProgressError("执行范围须包含 end_stage 和 user_instruction")
-    if not isinstance(value["end_stage"], str) or value["end_stage"] not in STAGES:
-        raise ProgressError("执行结束阶段必须是 1、2 或 3")
-    instruction = value["user_instruction"]
-    if instruction is None:
-        if value["end_stage"] != "3":
-            raise ProgressError("提前结束须提供用户原话和可定位来源")
-    else:
-        if not isinstance(instruction, dict) or set(instruction) != {"text", "source"}:
-            raise ProgressError("执行范围依据须包含用户原话 text 和来源 source")
-        instruction = {"text": discussion_text(instruction["text"], "执行范围的用户原话"),
-                       "source": text(instruction["source"], "执行范围的用户来源")}
-    return {"end_stage": value["end_stage"], "user_instruction": instruction}
+def user_instruction(value):
+    if not isinstance(value, dict) or set(value) != {"text", "source"}:
+        raise ProgressError("用户指令须包含原话 text 和可定位来源 source")
+    return {"text": discussion_text(value["text"], "用户指令原话"),
+            "source": text(value["source"], "用户指令来源")}
 
 
-def make_execution_scope(end_stage="3", reply=None, source=None):
+def continuation_state(value):
+    if not isinstance(value, dict) or set(value) != {"continuous", "mode_instruction", "paused_stages"}:
+        raise ProgressError("连续执行状态须包含 continuous、mode_instruction 和 paused_stages")
+    if type(value["continuous"]) is not bool:
+        raise ProgressError("continuous 必须是布尔值")
+    instruction = value["mode_instruction"]
+    if instruction is not None:
+        instruction = user_instruction(instruction)
+    elif not value["continuous"]:
+        raise ProgressError("关闭连续模式须提供用户原话和可定位来源")
+    pauses = value["paused_stages"]
+    if not isinstance(pauses, dict) or pauses.keys() - STAGES.keys():
+        raise ProgressError("暂停阶段须使用 1、2、3 作为键，并记录用户依据")
+    return {"continuous": value["continuous"], "mode_instruction": instruction,
+            "paused_stages": {stage: user_instruction(pauses[stage]) for stage in STAGES if stage in pauses}}
+
+
+def make_continuation(continuous=True, reply=None, source=None):
     instruction = None if reply is None and source is None else {"text": reply, "source": source}
-    return execution_scope({"end_stage": end_stage, "user_instruction": instruction})
+    return continuation_state({"continuous": continuous, "mode_instruction": instruction, "paused_stages": {}})
 
 
-def set_scope(data, end_stage, reply, source):
-    if reply is None or source is None:
-        raise ProgressError("修改执行范围须提供用户原话和可定位来源")
-    data["execution_scope"] = make_execution_scope(end_stage, reply, source)
+def set_continuous(data, continuous, reply, source):
+    state = deepcopy(data["continuation"])
+    state.update(continuous=continuous, mode_instruction=user_instruction({"text": reply, "source": source}))
+    data["continuation"] = continuation_state(state)
 
 
-def scope_description(scope):
-    end = STAGES[scope["end_stage"]]
-    instruction = scope["user_instruction"]
-    if instruction is None:
-        return "默认连续执行至 3实现及收尾。"
+def pause_targets(stage):
+    if stage == "all":
+        return tuple(STAGES)
+    if stage not in STAGES:
+        raise ProgressError("暂停或恢复的阶段必须是 1、2、3 或 all")
+    return (stage,)
+
+
+def pause_stages(data, stage, reply, source):
+    instruction = user_instruction({"text": reply, "source": source})
+    state = deepcopy(data["continuation"])
+    for target in pause_targets(stage):
+        state["paused_stages"][target] = instruction
+    data["continuation"] = continuation_state(state)
+
+
+def resume_stages(data, stage, reply, source):
+    user_instruction({"text": reply, "source": source})
+    state = deepcopy(data["continuation"])
+    for target in pause_targets(stage):
+        state["paused_stages"].pop(target, None)
+    data["continuation"] = continuation_state(state)
+
+
+def require_running(data, stage):
+    if stage in data["continuation"]["paused_stages"]:
+        raise ProgressError(f"{STAGES[stage]} 已按用户要求暂停，取得恢复指令后用 resume 恢复")
+
+
+def instruction_description(instruction):
     quote = instruction["text"].replace("\n", " ")
-    return f"按用户要求执行至 {end}；依据：“{quote}”（来源：{instruction['source']}）。"
+    return f"依据：“{quote}”（来源：{instruction['source']}）。"
+
+
+def continuation_description(state):
+    description = "连续模式已开启，后续适用阶段自动接续。" if state["continuous"] else "连续模式已关闭，等待用户指定下一步。"
+    if state["mode_instruction"] is not None:
+        description += " " + instruction_description(state["mode_instruction"])
+    for stage, instruction in state["paused_stages"].items():
+        description += f" {STAGES[stage]} 已按用户要求暂停；" + instruction_description(instruction)
+    return description
+
+
+def handoff_wait(state, stage):
+    if stage in state["paused_stages"]:
+        return f"{STAGES[stage]} 已按用户要求暂停，等待用户恢复该阶段。"
+    if not state["continuous"]:
+        return "连续模式已关闭，等待用户指定下一步。"
+    return None
 
 
 def absolute_path(value, label):
@@ -238,8 +287,8 @@ def render(data):
         f"- 本次任务：{escape(data['summary'])}",
         f"- 目标项目：{link(data['project'], data['project'])}",
         f"- 当前阶段：{escape(stage)}",
-        f"- 当前大步骤：{escape(step)}", "", "## 执行范围", "", "```json",
-        json.dumps(data["execution_scope"], ensure_ascii=False, indent=2), "```",
+        f"- 当前大步骤：{escape(step)}", "", "## 连续执行状态", "", "```json",
+        json.dumps(data["continuation"], ensure_ascii=False, indent=2), "```",
         "", "## 阶段时间", "",
         row(STAGE_COLUMNS), row(["---"] * len(STAGE_COLUMNS)),
     ]
@@ -249,6 +298,9 @@ def render(data):
             phase["started_at"], phase["finished_at"] or EMPTY, escape(phase["note"]),
         ]))
     for phase in data["stages"]:
+        if "entry_instruction" in phase:
+            lines.extend(["", f"## {STAGES[phase['stage']]}进入依据（第 {phase['run']} 次）", "", "```json",
+                          json.dumps(phase["entry_instruction"], ensure_ascii=False, indent=2), "```"])
         if "discussions" in phase:
             lines.extend(["", f"## 1拷问确认记录（第 {phase['run']} 次）", "", "```json",
                           json.dumps(phase["discussions"], ensure_ascii=False, indent=2), "```"])
@@ -272,8 +324,8 @@ def render(data):
 
 
 def validate(data):
-    if execution_scope(data["execution_scope"]) != data["execution_scope"]:
-        raise ProgressError("执行范围格式无效")
+    if continuation_state(data["continuation"]) != data["continuation"]:
+        raise ProgressError("连续执行状态格式无效")
     if str(uuid.UUID(data["task_id"])) != data["task_id"]:
         raise ProgressError("任务标识无效")
     text(data["summary"], "任务简介")
@@ -285,6 +337,8 @@ def validate(data):
         stage = phase["stage"]
         if stage not in STAGES:
             raise ProgressError("阶段必须是 1、2 或 3")
+        if "entry_instruction" in phase and user_instruction(phase["entry_instruction"]) != phase["entry_instruction"]:
+            raise ProgressError("阶段进入依据格式无效")
         if "closure" in phase:
             if stage != "3" or closure_input(phase["closure"]) != phase["closure"]:
                 raise ProgressError("归档输入只能记录在 3实现，且须符合固定格式")
@@ -413,15 +467,15 @@ def parse_document(content):
     field("当前阶段")
     field("当前大步骤")
     expect("")
-    if position >= len(lines) or lines[position] != "## 执行范围":
-        raise ProgressError("进度文档缺少执行范围记录，请沿用创建本任务的旧版本收尾")
-    expect("## 执行范围")
+    if position >= len(lines) or lines[position] != "## 连续执行状态":
+        raise ProgressError("进度文档缺少连续执行状态，请沿用创建本任务的旧版本收尾")
+    expect("## 连续执行状态")
     expect("")
     expect("```json")
     start = position
     while position < len(lines) and lines[position] != "```":
         position += 1
-    data["execution_scope"] = json.loads("\n".join(lines[start:position]))
+    data["continuation"] = json.loads("\n".join(lines[start:position]))
     expect("```")
     expect("")
     expect("## 阶段时间")
@@ -434,6 +488,16 @@ def parse_document(content):
             "finished_at": None if finish == EMPTY else finish, "note": unescape(note), "steps": [],
         })
     for phase in data["stages"]:
+        if position + 1 < len(lines) and lines[position + 1] == f"## {STAGES[phase['stage']]}进入依据（第 {phase['run']} 次）":
+            expect("")
+            expect(f"## {STAGES[phase['stage']]}进入依据（第 {phase['run']} 次）")
+            expect("")
+            expect("```json")
+            start = position
+            while position < len(lines) and lines[position] != "```":
+                position += 1
+            phase["entry_instruction"] = json.loads("\n".join(lines[start:position]))
+            expect("```")
         if position + 1 < len(lines) and lines[position + 1] == f"## 1拷问确认记录（第 {phase['run']} 次）":
             expect("")
             expect(f"## 1拷问确认记录（第 {phase['run']} 次）")
@@ -549,6 +613,7 @@ def confirmed_discussion(phase):
 
 
 def prepare_discussion(data, points, at):
+    require_running(data, "1")
     candidate = deepcopy(data)
     phase = active_discussion(candidate)
     points = discussion_points(points)
@@ -563,6 +628,7 @@ def prepare_discussion(data, points, at):
 
 
 def confirm_discussion(data, identifier, reply, source, at):
+    require_running(data, "1")
     candidate = deepcopy(data)
     phase = active_discussion(candidate)
     records = phase.get("discussions", [])
@@ -582,16 +648,17 @@ def confirm_discussion(data, identifier, reply, source, at):
     data.update(candidate)
 
 
-def discussion_prompt(record, scope):
+def discussion_prompt(record, state):
     lines = ["请确认本轮讨论要点：", ""]
     for key, label in DISCUSSION_FIELDS:
         lines.extend([f"**{label}**", *(escape(line) for line in record["points"][key].splitlines()), ""])
-    lines.extend(["**执行范围（沿用任务记录）**", escape(scope_description(scope)), "",
+    lines.extend(["**连续执行状态（沿用任务记录）**", escape(continuation_description(state)), "",
                   "以上理解是否准确？请确认或指出需要调整的内容，确认后再开始拷问。"])
     return "\n".join(lines)
 
 
 def finish_discussion(data, markdown, input_sha256, at):
+    require_running(data, "1")
     candidate = deepcopy(data)
     phase = active_discussion(candidate)
     confirmed_discussion(phase)
@@ -605,9 +672,9 @@ def finish_discussion(data, markdown, input_sha256, at):
     data.update(candidate)
 
 
-def enter_stage(data, stage, at, new_run=False, closure=None):
-    if int(stage) > int(data["execution_scope"]["end_stage"]):
-        raise ProgressError("目标阶段超出用户限定的执行范围，须先核对新指令并用 set-scope 更新")
+def enter_stage(data, stage, at, new_run=False, closure=None, reply=None, source=None):
+    require_running(data, stage)
+    instruction = None if reply is None and source is None else user_instruction({"text": reply, "source": source})
     if closure is not None:
         if stage != "3":
             raise ProgressError("归档输入只适用于 3实现")
@@ -616,11 +683,15 @@ def enter_stage(data, stage, at, new_run=False, closure=None):
     if existing is not None and not new_run:
         attach_closure(existing, closure)
         return
+    if not data["continuation"]["continuous"] and instruction is None:
+        raise ProgressError("连续模式已关闭，进入新阶段须提供用户指定该阶段的原话和来源")
     if any(phase["finished_at"] is None for phase in data["stages"]):
         raise ProgressError("当前阶段尚未结束，不能进入另一阶段")
     data["stages"].append({"stage": stage, "run": existing["run"] + 1 if existing else 1,
                            "status": "进行中", "started_at": at, "finished_at": None,
                            "note": "", "steps": []})
+    if instruction is not None:
+        data["stages"][-1]["entry_instruction"] = instruction
     attach_closure(data["stages"][-1], closure)
 
 
@@ -636,7 +707,7 @@ def attach_closure(phase, closure):
     phase["closure"] = closure
 
 
-def create_document(path, project, summary, stage, at, closure=None, scope=None):
+def create_document(path, project, summary, stage, at, closure=None, continuation=None):
     summary = text(summary, "任务简介")
     if not project.is_dir():
         raise ProgressError(f"目标项目目录不存在：{project}")
@@ -646,22 +717,26 @@ def create_document(path, project, summary, stage, at, closure=None, scope=None)
             if (Path(data["project"]).resolve() != project.resolve() or data["summary"] != summary
                     or data["stages"][-1]["stage"] != stage):
                 raise ProgressError("已有进度文档的任务或阶段不一致，原文件已保留")
-            if scope is not None and execution_scope(scope) != data["execution_scope"]:
-                raise ProgressError("已有任务的执行范围不同，须按用户新指令用 set-scope 更新")
+            if continuation is not None and continuation_state(continuation) != data["continuation"]:
+                raise ProgressError("已有任务的连续执行状态不同，须按用户指令更新状态")
             original = render(data)
             enter_stage(data, stage, at, closure=closure)
             if render(data) != original:
                 write_document(path, data)
             return data
         data = {"task_id": str(uuid.uuid4()), "summary": summary, "project": str(project.resolve()),
-                "execution_scope": execution_scope(scope) if scope is not None else make_execution_scope(),
+                "continuation": continuation_state(continuation) if continuation is not None else make_continuation(),
                 "stages": []}
-        enter_stage(data, stage, at, closure=closure)
+        instruction = data["continuation"]["mode_instruction"]
+        enter_stage(data, stage, at, closure=closure,
+                    reply=instruction["text"] if instruction else None,
+                    source=instruction["source"] if instruction else None)
         write_document(path, data, create=True)
         return data
 
 
 def complete_steps(data, stage, entries):
+    require_running(data, stage)
     if not isinstance(entries, list) or not entries:
         raise ProgressError("步骤记录必须是非空 JSON 列表")
     candidate = deepcopy(data)
@@ -734,7 +809,7 @@ def compact_result(path, data):
             "stage": phase["stage"], "run": phase["run"], "status": phase["status"],
             "started_at": phase["started_at"], "finished_at": phase["finished_at"],
             "last_completed_step": phase["steps"][-1]["id"] if phase["steps"] else None,
-            "next_step": next_step(phase), "execution_scope": data["execution_scope"]}
+            "next_step": next_step(phase), "continuation": data["continuation"]}
 
 
 def json_value(value):
@@ -752,22 +827,29 @@ def main():
         ("complete", "按列表登记一个或多个已完成步骤；最后一步自动结束阶段"),
         ("stop", "明确取消或切换流程时终止阶段，保留已完成步骤"),
         ("show", "恢复任务或生成报告时读取完整记录及阶段耗时"),
-        ("set-scope", "按用户新指令更新任务执行范围，保留阶段记录"),
+        ("set-continuous", "按用户明确指令开启或关闭贯穿任务的连续模式"),
+        ("pause", "按用户明确指令暂停指定阶段或所有阶段，保留连续模式"),
+        ("resume", "按用户明确指令恢复指定阶段或所有阶段，沿用连续模式"),
         ("cleanup", "整个任务已结束且报告已保留后删除临时进度文档"),
         ("prepare-discussion", "保存本轮讨论要点并生成待用户确认的内容"),
         ("confirm-discussion", "登记当前版本的实际用户答复及依据，完成确认讨论要点"),
         ("check-discussion", "进入拷问前核对本轮确认并返回已确认要点，只读"),
     ):
-        subparser = commands.add_parser(command, help=description, allow_abbrev=command != "complete")
+        subparser = commands.add_parser(command, help=description, allow_abbrev=False)
         subparser.add_argument("--project", required=True, help="原目标项目的绝对路径")
         if command == "create":
             subparser.add_argument("--output", required=True, help="进度文档绝对路径，父目录须已存在")
             subparser.add_argument("--summary", required=True, help="原始任务的问题和目标，使用简短单行文本")
-        if command in {"create", "set-scope"}:
-            subparser.add_argument("--end-stage", choices=tuple(STAGES), required=command == "set-scope",
-                                   help="任务执行终点；新任务默认 3，提前结束须提供用户原话和来源")
-            subparser.add_argument("--scope-reply", required=command == "set-scope", help="用户明确限定或修改执行范围的原话")
-            subparser.add_argument("--scope-source", required=command == "set-scope", help="该用户指令的可定位来源")
+        if command in {"create", "set-continuous"}:
+            subparser.add_argument("--continuous", choices=("true", "false"), required=command == "set-continuous",
+                                   help="贯穿任务的连续模式，新任务默认 true；调整时保存用户原话和来源")
+        if command in {"create", "enter", "set-continuous", "pause", "resume"}:
+            required = command in {"set-continuous", "pause", "resume"}
+            subparser.add_argument("--reply", required=required, help="用户调整连续模式、暂停、恢复或手动进入阶段的原话")
+            subparser.add_argument("--source", required=required, help="该用户指令的可定位来源")
+        if command in {"pause", "resume"}:
+            subparser.add_argument("--stage", required=True, choices=(*STAGES, "all"),
+                                   help="用户指定的阶段，all 表示所有阶段")
         if command != "create":
             subparser.add_argument("--file", required=True, help="同一进度文档的绝对路径")
             subparser.add_argument("--task-id", required=True, help="创建时返回的固定任务标识")
@@ -798,19 +880,26 @@ def main():
         project = absolute_path(args.project, "目标项目")
         path = absolute_path(args.output if args.command == "create" else args.file, "进度文档")
         if args.command == "create":
-            scope = None
-            if args.end_stage is not None or args.scope_reply is not None or args.scope_source is not None:
-                scope = make_execution_scope(args.end_stage or "3", args.scope_reply, args.scope_source)
-            data = create_document(path, project, args.summary, args.stage, event_time(args.at), args.closure, scope)
+            state = None
+            if args.continuous is not None:
+                user_instruction({"text": args.reply, "source": args.source})
+                state = make_continuation(args.continuous == "true", args.reply, args.source)
+            elif args.reply is not None or args.source is not None:
+                raise ProgressError("创建时记录模式调整须同时指定 --continuous、--reply 和 --source")
+            data = create_document(path, project, args.summary, args.stage, event_time(args.at), args.closure, state)
         else:
             with lock_document(path):
                 data = read_document(path)
                 match_task(data, args.task_id, project)
                 original = render(data)
                 if args.command == "enter":
-                    enter_stage(data, args.stage, event_time(args.at), args.new_run, args.closure)
-                elif args.command == "set-scope":
-                    set_scope(data, args.end_stage, args.scope_reply, args.scope_source)
+                    enter_stage(data, args.stage, event_time(args.at), args.new_run, args.closure, args.reply, args.source)
+                elif args.command == "set-continuous":
+                    set_continuous(data, args.continuous == "true", args.reply, args.source)
+                elif args.command == "pause":
+                    pause_stages(data, args.stage, args.reply, args.source)
+                elif args.command == "resume":
+                    resume_stages(data, args.stage, args.reply, args.source)
                 elif args.command == "complete":
                     complete_steps(data, args.stage, args.steps)
                 elif args.command == "prepare-discussion":
@@ -837,7 +926,7 @@ def main():
             result["confirmation_id"] = record["id"]
             if args.command == "prepare-discussion":
                 result["confirmed"] = record["confirmation"] is not None
-                result["confirmation_prompt"] = discussion_prompt(record, data["execution_scope"])
+                result["confirmation_prompt"] = discussion_prompt(record, data["continuation"])
             elif args.command == "check-discussion":
                 result.update(points=record["points"], confirmation=record["confirmation"])
         print(json.dumps(result, ensure_ascii=False, indent=2))

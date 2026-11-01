@@ -24,7 +24,7 @@ PROFILES = (
 
 
 class ResultReportTests(unittest.TestCase):
-    def run_report(self, profile, end_stage, available, artifacts=None, extra=None):
+    def run_report(self, profile, continuous, available, artifacts=None, extra=None, paused_stage=None):
         skill, available_argument, _, default_artifacts, extra_arguments = profile
         script = REPOSITORY / "skills" / skill / "scripts/render-result.py"
         arguments = [
@@ -38,8 +38,10 @@ class ResultReportTests(unittest.TestCase):
             path = project / 'progress.md'
             at = '2026-01-01T09:00:00-07:00'
             stage = '1' if skill == 'design-discussion' else '2'
-            scope = None if end_stage is None else progress.make_execution_scope(end_stage, '只执行到当前阶段', '用户原始范围要求')
-            data = progress.create_document(path, project, SUMMARY, stage, at, scope=scope)
+            state = None if continuous is None else progress.make_continuation(continuous, '关闭连续模式', '用户模式要求')
+            data = progress.create_document(path, project, SUMMARY, stage, at, continuation=state)
+            if paused_stage is not None:
+                progress.pause_stages(data, paused_stage, '暂停下一阶段', '用户暂停消息')
             if stage == '1':
                 points = {'goal': SUMMARY, 'decisions': '无', 'scope': '本任务', 'open_questions': '无', 'inferences': '无'}
                 progress.prepare_discussion(data, points, at)
@@ -67,23 +69,22 @@ class ResultReportTests(unittest.TestCase):
                 self.assertIn(SUMMARY, result.stdout)
                 self.assert_recommendation(profile, result.stdout)
                 self.assertIn(f"下一步将进入 {profile[2]} 流程", result.stdout)
-                self.assertIn('默认连续执行至 3实现及收尾', result.stdout)
+                self.assertIn('连续模式已开启', result.stdout)
                 self.assertNotIn("是否", result.stdout)
 
-    def test_explicit_stage_scope_preserves_recommendation_without_handoff(self):
+    def test_manual_mode_preserves_recommendation_and_waits_for_user(self):
         for profile in PROFILES:
             for available in ("true", "false", "unknown"):
                 with self.subTest(skill=profile[0], stage=profile[2], available=available):
-                    result = self.run_report(profile, '1' if profile[0] == 'design-discussion' else '2', available)
+                    result = self.run_report(profile, False, available)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn(SUMMARY, result.stdout)
                     self.assert_recommendation(profile, result.stdout)
                     for artifact in json.loads(profile[3]):
                         self.assertIn(artifact["location"], result.stdout)
-                    stage = "1拷问" if profile[0] == "design-discussion" else "2方案"
-                    self.assertIn(f"本次按用户要求在 {stage} 结束。", result.stdout)
-                    self.assertIn('只执行到当前阶段', result.stdout)
-                    self.assertIn('用户原始范围要求', result.stdout)
+                    self.assertIn('等待用户指定下一步', result.stdout)
+                    self.assertIn('关闭连续模式', result.stdout)
+                    self.assertIn('用户模式要求', result.stdout)
                     for text in ("是否", "下一步将进入", "无法使用", "尚未核实", "交接暂缓"):
                         self.assertNotIn(text, result.stdout)
 
@@ -99,7 +100,7 @@ class ResultReportTests(unittest.TestCase):
                         self.assertIn(artifact["location"], result.stdout)
                     self.assertNotIn("是否", result.stdout)
                     self.assertNotIn("下一步将进入", result.stdout)
-                    self.assertIn('默认连续执行至 3实现及收尾', result.stdout)
+                    self.assertIn('连续模式已开启', result.stdout)
                     self.assertNotIn('按用户要求在', result.stdout)
                     if available == "unknown":
                         self.assertIn("尚未核实", result.stdout)
@@ -108,7 +109,7 @@ class ResultReportTests(unittest.TestCase):
                         self.assertIn("无法使用", result.stdout)
                         self.assertNotIn("尚未核实", result.stdout)
 
-    def test_retired_mode_switch_cannot_override_recorded_scope(self):
+    def test_retired_report_mode_switch_preserves_recorded_continuation(self):
         for profile in PROFILES:
             with self.subTest(skill=profile[0], stage=profile[2]):
                 result = self.run_report(profile, None, "true", extra=['--continuous-mode', 'false'])
@@ -135,13 +136,18 @@ class ResultReportTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 2)
                     self.assertEqual(result.stdout, "")
 
-    def test_discussion_continues_to_user_requested_plan_and_stays_within_scope(self):
-        for profile in PROFILES[:2]:
-            result = self.run_report(profile, '2', 'true')
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assert_recommendation(profile, result.stdout)
-            self.assertIn('下一步将进入 2方案 流程', result.stdout)
-            self.assertNotIn('本次按用户要求在 1拷问 结束', result.stdout)
+    def test_explicit_pause_preserves_mode_and_recommendation(self):
+        for profile in PROFILES:
+            for available in ('true', 'false', 'unknown'):
+                stage = '2' if profile[2] == '2方案' else '3'
+                result = self.run_report(profile, None, available, paused_stage=stage)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assert_recommendation(profile, result.stdout)
+                self.assertIn('连续模式已开启', result.stdout)
+                self.assertIn(f'{profile[2]} 已按用户要求暂停', result.stdout)
+                self.assertIn('用户暂停消息', result.stdout)
+                for wording in ('下一步将进入', '无法使用', '尚未核实'):
+                    self.assertNotIn(wording, result.stdout)
 
     def test_plan_report_checks_task_identity_and_uses_recorded_start(self):
         profile = PROFILES[2]

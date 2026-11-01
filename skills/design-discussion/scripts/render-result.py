@@ -84,12 +84,11 @@ def format_duration(seconds):
 
 
 def render_result(summary, artifacts, started_at, recommended_stage,
-                  recommendation, scope, next_skill_available, now):
+                  recommendation, state, next_skill_available, now):
     duration = int((now - started_at).total_seconds())
     stage_name = STAGE_NAMES[recommended_stage]
-    handoff_stage = str(min(int(recommended_stage), int(scope["end_stage"])))
-    handoff_name = STAGE_NAMES.get(handoff_stage)
-    skill_name = STAGE_SKILLS.get(handoff_stage)
+    handoff_name = STAGE_NAMES[recommended_stage]
+    skill_name = STAGE_SKILLS[recommended_stage]
     lines = ["**1拷问已完成**", "", "**拷问摘要**  "]
     lines.extend(escape_text(line.strip()) for line in summary.strip().splitlines())
     lines.extend(["", "**成果**", ""])
@@ -102,7 +101,7 @@ def render_result(summary, artifacts, started_at, recommended_stage,
         f"**开始时间**：{started_at.isoformat(sep=' ', timespec='seconds')}  ",
         f"**总耗时**：{format_duration(duration)}",
     ])
-    lines.extend(["", "**执行范围**  ", escape_text(progress.scope_description(scope)),
+    lines.extend(["", "**连续执行状态**  ", escape_text(progress.continuation_description(state)),
                   "", "---", "", "**下一步**", ""])
     recommendation_lines = [
         escape_text(line.strip()) for line in recommendation.strip().splitlines()
@@ -110,8 +109,9 @@ def render_result(summary, artifacts, started_at, recommended_stage,
     lines.append(f"建议进入 **{stage_name}**，{recommendation_lines[0]}")
     lines.extend(recommendation_lines[1:])
     lines.append("")
-    if scope["end_stage"] == "1":
-        lines.append("本次按用户要求在 1拷问 结束。")
+    wait = progress.handoff_wait(state, recommended_stage)
+    if wait:
+        lines.append(escape_text(wait))
     elif next_skill_available is None:
         lines.append(
             f"**{handoff_name}** 对应 Skill 的可用情况尚未核实，交接暂缓。"
@@ -152,7 +152,7 @@ def main():
     )
     parser.add_argument(
         "--next-skill-available", required=True, choices=("true", "false", "unknown"),
-        help="执行范围内实际接续阶段的 Skill 可用情况：true 可用，false 不可用，unknown 尚未核实",
+        help="下一适用阶段的 Skill 可用情况：true 可用，false 不可用，unknown 尚未核实",
     )
     args = parser.parse_args()
     try:
@@ -177,11 +177,12 @@ def main():
                 print(phase["report"]["markdown"], end="", flush=True)
                 return
             progress.confirmed_discussion(phase)
+            progress.require_running(data, "1")
             if len(phase["steps"]) != 2:
                 raise progress.ProgressError("生成完成报告前须完成确认讨论要点和执行拷问两步")
             markdown = render_result(
                 args.summary, args.artifacts, progress.timestamp(phase["started_at"]),
-                args.recommended_stage, args.recommendation, data["execution_scope"],
+                args.recommended_stage, args.recommendation, data["continuation"],
                 {"true": True, "false": False, "unknown": None}[args.next_skill_available], progress.timestamp(at),
             )
             progress.finish_discussion(data, markdown, digest, at)

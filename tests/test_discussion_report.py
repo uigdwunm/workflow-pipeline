@@ -32,7 +32,7 @@ class DiscussionReportTests(unittest.TestCase):
         self.project.mkdir()
         self.file = self.root / 'progress.md'
         self.data = progress.create_document(self.file, self.project, '首页整理', '1', START)
-        progress.set_scope(self.data, '1', '本次只做讨论', '用户原始范围指令')
+        progress.set_continuous(self.data, False, '本次只做讨论', '用户明确关闭自动接续')
         self.task_id = self.data['task_id']
         points = {'goal': '检查首页结构', 'decisions': '保持业务行为', 'scope': '只讨论',
                   'open_questions': '如何划分职责', 'inferences': '无'}
@@ -79,7 +79,7 @@ class DiscussionReportTests(unittest.TestCase):
         self.assertIn('2020-01-01 10:00:00+08:00', result.stdout)
         self.assertIn('**总耗时**：5 分钟 0 秒', result.stdout)
         self.assertIn('建议进入 **2方案**', result.stdout)
-        self.assertIn('本次按用户要求在 1拷问 结束。', result.stdout)
+        self.assertIn('等待用户指定下一步', result.stdout)
         self.assertEqual([path.name for path in self.root.iterdir() if path.is_file()], ['progress.md'])
 
     def test_plain_complete_and_batch_cannot_replace_report_generation(self):
@@ -114,7 +114,7 @@ class DiscussionReportTests(unittest.TestCase):
         progress.stop_stage(self.data, '1', '用户取消', INTERVIEW_END)
         progress.write_document(self.file, self.data)
         self.assert_rejected()
-        progress.set_scope(self.data, '3', '继续后续阶段', '用户新指令')
+        progress.set_continuous(self.data, True, '继续后续阶段', '用户新指令')
         progress.enter_stage(self.data, '2', END)
         progress.write_document(self.file, self.data)
         self.assert_rejected()

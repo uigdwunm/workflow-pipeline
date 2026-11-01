@@ -124,6 +124,8 @@ def main():
         if phase["stage"] != "3":
             raise progress.ProgressError("当前阶段不是 3实现")
         complete = args.complete or phase["status"] == "已完成"
+        if complete and phase["finished_at"] is None:
+            progress.require_running(data, "3")
         if complete:
             if phase["status"] == "已终止":
                 raise progress.ProgressError("本轮已终止，不能生成已完成报告")

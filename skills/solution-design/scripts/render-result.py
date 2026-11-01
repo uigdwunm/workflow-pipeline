@@ -72,7 +72,7 @@ def format_duration(seconds):
     return " ".join([f"{value} {unit}" for value, unit in units if value] + [f"{seconds} 秒"])
 
 
-def render_result(summary, artifacts, started_at, scope,
+def render_result(summary, artifacts, started_at, state,
                   implementation_skill_available, now):
     duration = int((now - started_at).total_seconds())
     lines = ["**2方案已完成**", "", "**方案摘要**  "]
@@ -84,8 +84,8 @@ def render_result(summary, artifacts, started_at, scope,
         f"**开始时间**：{started_at.isoformat(sep=' ', timespec='seconds')}  ",
         f"**总耗时**：{format_duration(duration)}",
         "",
-        "**执行范围**  ",
-        escape_text(progress.scope_description(scope)),
+        "**连续执行状态**  ",
+        escape_text(progress.continuation_description(state)),
         "",
         "---",
         "",
@@ -95,8 +95,9 @@ def render_result(summary, artifacts, started_at, scope,
         "",
     ])
 
-    if scope["end_stage"] == "2":
-        lines.append("本次按用户要求在 2方案 结束。")
+    wait = progress.handoff_wait(state, "3")
+    if wait:
+        lines.append(escape_text(wait))
     elif implementation_skill_available is None:
         lines.append(
             "**3实现** 对应 Skill 的可用情况尚未核实，交接暂缓。"
@@ -140,14 +141,13 @@ def main():
         phase = data["stages"][-1]
         if phase["stage"] != "2" or phase["status"] != "进行中" or len(phase["steps"]) != 3:
             raise progress.ProgressError("方案报告须在当前 2方案前三步完成后、收尾登记前生成")
-        if data["execution_scope"]["end_stage"] == "1":
-            raise progress.ProgressError("当前方案阶段超出用户限定的执行范围，须先核对实际状态")
+        progress.require_running(data, "2")
         now = progress.timestamp(at)
         if now < progress.timestamp(phase["steps"][-1]["finished_at"]):
             raise progress.ProgressError("报告时间不能早于已完成步骤")
         print(render_result(
             args.summary, args.artifacts, progress.timestamp(phase["started_at"]),
-            data["execution_scope"],
+            data["continuation"],
             {"true": True, "false": False, "unknown": None}[args.implementation_skill_available], now,
         ), end="")
     except (progress.ProgressError, OSError, UnicodeError) as error:
